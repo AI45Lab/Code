@@ -146,7 +146,11 @@ impl DefaultSecurityProvider {
 
         // Add custom patterns (user-provided — log and skip invalid regexes)
         for p in &config.custom_patterns {
-            match SensitivePattern::try_new(p.name.clone(), p.regex.as_str(), p.redaction_label.clone()) {
+            match SensitivePattern::try_new(
+                p.name.clone(),
+                p.regex.as_str(),
+                p.redaction_label.clone(),
+            ) {
                 Ok(pattern) => patterns.push(pattern),
                 Err(e) => tracing::warn!(
                     "Skipping invalid custom security pattern '{}': {}",

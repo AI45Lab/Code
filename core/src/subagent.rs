@@ -670,7 +670,8 @@ permissions:
         // Verify rules are functional
         assert!(agent.permissions.allow[0].matches("read", &serde_json::json!({})));
         assert!(agent.permissions.allow[1].matches("grep", &serde_json::json!({})));
-        assert!(agent.permissions.allow[2].matches("Bash", &serde_json::json!({"command": "cargo build"})));
+        assert!(agent.permissions.allow[2]
+            .matches("Bash", &serde_json::json!({"command": "cargo build"})));
         assert!(agent.permissions.deny[0].matches("write", &serde_json::json!({})));
     }
 

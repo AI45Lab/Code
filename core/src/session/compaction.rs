@@ -70,7 +70,9 @@ pub(crate) async fn compact_messages(
             KEEP_RECENT_MESSAGES
         );
         let mut result = messages[..KEEP_INITIAL_MESSAGES.min(total)].to_vec();
-        let recent_start = total.saturating_sub(KEEP_RECENT_MESSAGES).max(KEEP_INITIAL_MESSAGES);
+        let recent_start = total
+            .saturating_sub(KEEP_RECENT_MESSAGES)
+            .max(KEEP_INITIAL_MESSAGES);
         result.extend_from_slice(&messages[recent_start..]);
         return Ok(Some(result));
     }

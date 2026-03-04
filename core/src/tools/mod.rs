@@ -170,10 +170,7 @@ impl ToolExecutor {
                         .parent()
                         .and_then(|p| p.canonicalize().ok())
                         .ok_or_else(|| {
-                            std::io::Error::new(
-                                std::io::ErrorKind::NotFound,
-                                "parent not found",
-                            )
+                            std::io::Error::new(std::io::ErrorKind::NotFound, "parent not found")
                         })
                 });
 

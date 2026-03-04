@@ -132,8 +132,10 @@ impl TaskExecutor {
         // Register MCP tools so child agents can access MCP servers.
         if let Some(ref mcp) = self.mcp_manager {
             let all_tools = mcp.get_all_tools().await;
-            let mut by_server: std::collections::HashMap<String, Vec<crate::mcp::protocol::McpTool>> =
-                std::collections::HashMap::new();
+            let mut by_server: std::collections::HashMap<
+                String,
+                Vec<crate::mcp::protocol::McpTool>,
+            > = std::collections::HashMap::new();
             for (server, tool) in all_tools {
                 by_server.entry(server).or_default().push(tool);
             }

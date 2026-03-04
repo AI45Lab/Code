@@ -611,10 +611,7 @@ fn eval_func_call(func_call: &hcl::expr::FuncCall) -> JsonValue {
                 let var_name = match arg {
                     hcl::Expression::String(s) => s.as_str(),
                     _ => {
-                        tracing::warn!(
-                            "env() expects a string argument, got: {:?}",
-                            arg
-                        );
+                        tracing::warn!("env() expects a string argument, got: {:?}", arg);
                         return JsonValue::Null;
                     }
                 };
@@ -1790,8 +1787,14 @@ mod tests {
         assert_eq!(env.get("SIMPLE").unwrap().as_str().unwrap(), "value");
 
         // These mangled keys must NOT exist
-        assert!(env.get("apiKey").is_none(), "env var key should not be camelCase'd");
-        assert!(env.get("APIKEY").is_none(), "env var key should not have underscores stripped");
+        assert!(
+            env.get("apiKey").is_none(),
+            "env var key should not be camelCase'd"
+        );
+        assert!(
+            env.get("APIKEY").is_none(),
+            "env var key should not have underscores stripped"
+        );
         assert!(env.get("anthropicApiKey").is_none());
 
         std::env::remove_var("A3S_TEST_SECRET");
@@ -1821,7 +1824,10 @@ mod tests {
 
         assert_eq!(env.get("MY_VAR").unwrap().as_str().unwrap(), "hello");
         assert_eq!(env.get("OTHER_VAR").unwrap().as_str().unwrap(), "world");
-        assert!(env.get("myVar").is_none(), "block env keys should not be camelCase'd");
+        assert!(
+            env.get("myVar").is_none(),
+            "block env keys should not be camelCase'd"
+        );
     }
 
     #[test]

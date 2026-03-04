@@ -14,19 +14,13 @@ pub(crate) async fn read_process_output(
     let stdout = match child.stdout.take() {
         Some(s) => s,
         None => {
-            return (
-                "Internal error: child stdout not piped".to_string(),
-                false,
-            );
+            return ("Internal error: child stdout not piped".to_string(), false);
         }
     };
     let stderr = match child.stderr.take() {
         Some(s) => s,
         None => {
-            return (
-                "Internal error: child stderr not piped".to_string(),
-                false,
-            );
+            return ("Internal error: child stderr not piped".to_string(), false);
         }
     };
 
