@@ -57,14 +57,32 @@ pub fn register_batch(registry: &Arc<ToolRegistry>) {
 ///
 /// Must be called after the registry is wrapped in Arc. Requires an LLM client
 /// and the workspace path so child agent loops can be spawned inline.
+/// Optionally accepts an MCP manager so child sessions inherit MCP tools.
 pub fn register_task(
     registry: &Arc<ToolRegistry>,
     llm_client: Arc<dyn crate::llm::LlmClient>,
     agent_registry: Arc<crate::subagent::AgentRegistry>,
     workspace: String,
 ) {
+    register_task_with_mcp(registry, llm_client, agent_registry, workspace, None);
+}
+
+/// Register the task delegation tools with optional MCP manager.
+///
+/// When `mcp_manager` is provided, child subagent sessions will have access
+/// to all MCP tools from connected servers.
+pub fn register_task_with_mcp(
+    registry: &Arc<ToolRegistry>,
+    llm_client: Arc<dyn crate::llm::LlmClient>,
+    agent_registry: Arc<crate::subagent::AgentRegistry>,
+    workspace: String,
+    mcp_manager: Option<Arc<crate::mcp::manager::McpManager>>,
+) {
     use crate::tools::task::{ParallelTaskTool, TaskExecutor, TaskTool};
-    let executor = Arc::new(TaskExecutor::new(agent_registry, llm_client, workspace));
+    let executor = Arc::new(match mcp_manager {
+        Some(mcp) => TaskExecutor::with_mcp(agent_registry, llm_client, workspace, mcp),
+        None => TaskExecutor::new(agent_registry, llm_client, workspace),
+    });
     registry.register_builtin(Arc::new(TaskTool::new(Arc::clone(&executor))));
     registry.register_builtin(Arc::new(ParallelTaskTool::new(executor)));
 }

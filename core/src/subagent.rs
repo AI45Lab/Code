@@ -643,6 +643,35 @@ permissions:
         assert_eq!(agent.name, "restricted-agent");
         assert_eq!(agent.permissions.allow.len(), 2);
         assert_eq!(agent.permissions.deny.len(), 1);
+        // Verify that deserialized rules actually match (tool_name populated)
+        assert!(agent.permissions.allow[0].matches("read", &serde_json::json!({})));
+        assert!(agent.permissions.allow[1].matches("grep", &serde_json::json!({})));
+        assert!(agent.permissions.deny[0].matches("write", &serde_json::json!({})));
+    }
+
+    #[test]
+    fn test_parse_agent_yaml_with_plain_string_permissions() {
+        // Users naturally write plain strings in allow/deny lists
+        let yaml = r#"
+name: plain-agent
+description: Agent with plain string permissions
+permissions:
+  allow:
+    - read
+    - grep
+    - "Bash(cargo:*)"
+  deny:
+    - write
+"#;
+        let agent = parse_agent_yaml(yaml).unwrap();
+        assert_eq!(agent.name, "plain-agent");
+        assert_eq!(agent.permissions.allow.len(), 3);
+        assert_eq!(agent.permissions.deny.len(), 1);
+        // Verify rules are functional
+        assert!(agent.permissions.allow[0].matches("read", &serde_json::json!({})));
+        assert!(agent.permissions.allow[1].matches("grep", &serde_json::json!({})));
+        assert!(agent.permissions.allow[2].matches("Bash", &serde_json::json!({"command": "cargo build"})));
+        assert!(agent.permissions.deny[0].matches("write", &serde_json::json!({})));
     }
 
     #[test]

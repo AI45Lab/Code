@@ -16,187 +16,206 @@ from pathlib import Path
 from a3s_code import Agent, Team, TeamRunner, TeamConfig, TeamTaskBoard
 
 
-def find_config_path():
-    """Find config file in home directory or project root."""
-    home_config = Path.home() / ".a3s" / "config.hcl"
-    if home_config.exists():
-        return str(home_config)
+class AgentTeamsTest:
+    """Integration tests for multi-agent team coordination."""
 
-    project_config = (
-        Path(__file__).parent.parent.parent.parent.parent.parent
-        / ".a3s"
-        / "config.hcl"
-    )
-    if project_config.exists():
-        return str(project_config)
+    def __init__(self, config_path: str) -> None:
+        self.config_path = config_path
 
-    raise FileNotFoundError("Config file not found. Please create ~/.a3s/config.hcl")
+    @staticmethod
+    def find_config_path() -> str:
+        """Find config file in home directory or project root."""
+        home_config = Path.home() / ".a3s" / "config.hcl"
+        if home_config.exists():
+            return str(home_config)
 
+        project_config = (
+            Path(__file__).parent.parent.parent.parent.parent.parent
+            / ".a3s"
+            / "config.hcl"
+        )
+        if project_config.exists():
+            return str(project_config)
 
-def print_board(board: TeamTaskBoard):
-    """Print a quick summary of the task board."""
-    (open_c, prog, rev, done, rej) = board.stats()
-    print(
-        f"  Board: total={len(board)}, open={open_c}, "
-        f"in_progress={prog}, in_review={rev}, done={done}, rejected={rej}"
-    )
+        raise FileNotFoundError("Config file not found. Please create ~/.a3s/config.hcl")
 
+    @staticmethod
+    def print_board(board: TeamTaskBoard) -> None:
+        """Print a quick summary of the task board."""
+        (open_c, prog, rev, done, rej) = board.stats()
+        print(
+            f"  Board: total={len(board)}, open={open_c}, "
+            f"in_progress={prog}, in_review={rev}, done={done}, rejected={rej}"
+        )
 
-def test_manual_coordination():
-    """Test 1: Manual task board API (no LLM)."""
-    print("\n📋 Test 1: Manual Task Board Coordination")
-    print("-" * 80)
+    # ========================================================================
+    # Test 1: Manual Task Board Coordination
+    # ========================================================================
 
-    config = TeamConfig(max_tasks=10, max_rounds=5, poll_interval_ms=50)
-    team = Team("manual-test", config)
-    team.add_member("lead", "lead")
-    team.add_member("worker-1", "worker")
-    team.add_member("reviewer", "reviewer")
+    def test_manual_coordination(self) -> None:
+        """Test 1: Manual task board API (no LLM)."""
+        print("\n Test 1: Manual Task Board Coordination")
+        print("-" * 80)
 
-    board = team.task_board()
+        config = TeamConfig(max_tasks=10, max_rounds=5, poll_interval_ms=50)
+        team = Team("manual-test", config)
+        team.add_member("lead", "lead")
+        team.add_member("worker-1", "worker")
+        team.add_member("reviewer", "reviewer")
 
-    # Lead posts tasks
-    id1 = board.post("Refactor auth to JWT", "lead")
-    id2 = board.post("Write integration tests", "lead")
-    id3 = board.post("Update API docs", "lead")
-    assert id1 and id2 and id3, "Tasks should be posted"
+        board = team.task_board()
 
-    print(f"  Posted 3 tasks. Board state:")
-    print_board(board)
+        # Lead posts tasks
+        id1 = board.post("Refactor auth to JWT", "lead")
+        id2 = board.post("Write integration tests", "lead")
+        id3 = board.post("Update API docs", "lead")
+        assert id1 and id2 and id3, "Tasks should be posted"
 
-    # Worker claims first task
-    task = board.claim("worker-1")
-    assert task is not None, "Worker should claim a task"
-    assert task.status == "in_progress"
-    print(f"  Worker claimed: [{task.id}] {task.description}")
+        print(f"  Posted 3 tasks. Board state:")
+        self.print_board(board)
 
-    # Worker completes it
-    board.complete(task.id, "Auth refactored to use JWT with RS256 keys")
-    completed = board.get(task.id)
-    assert completed.status == "in_review"
-    assert completed.result == "Auth refactored to use JWT with RS256 keys"
-    print(f"  Task submitted for review → status: {completed.status}")
+        # Worker claims first task
+        task = board.claim("worker-1")
+        assert task is not None, "Worker should claim a task"
+        assert task.status == "in_progress"
+        print(f"  Worker claimed: [{task.id}] {task.description}")
 
-    # Reviewer rejects then approves
-    board.reject(task.id)
-    rejected = board.get(task.id)
-    assert rejected.status == "rejected"
-    print(f"  Reviewer rejected → status: {rejected.status}")
+        # Worker completes it
+        board.complete(task.id, "Auth refactored to use JWT with RS256 keys")
+        completed = board.get(task.id)
+        assert completed.status == "in_review"
+        assert completed.result == "Auth refactored to use JWT with RS256 keys"
+        print(f"  Task submitted for review -> status: {completed.status}")
 
-    # Worker re-claims the rejected task
-    retried = board.claim("worker-1")
-    assert retried is not None and retried.id == task.id
-    board.complete(task.id, "Auth refactored with proper token rotation")
-    board.approve(task.id)
-    approved = board.get(task.id)
-    assert approved.status == "done"
-    print(f"  After retry: reviewer approved → status: {approved.status}")
+        # Reviewer rejects then approves
+        board.reject(task.id)
+        rejected = board.get(task.id)
+        assert rejected.status == "rejected"
+        print(f"  Reviewer rejected -> status: {rejected.status}")
 
-    # Check by_status
-    done_tasks = board.by_status("done")
-    open_tasks = board.by_status("open")
-    assert len(done_tasks) == 1
-    assert len(open_tasks) == 2
-    print(f"  Done: {len(done_tasks)}, Open: {len(open_tasks)}")
+        # Worker re-claims the rejected task
+        retried = board.claim("worker-1")
+        assert retried is not None and retried.id == task.id
+        board.complete(task.id, "Auth refactored with proper token rotation")
+        board.approve(task.id)
+        approved = board.get(task.id)
+        assert approved.status == "done"
+        print(f"  After retry: reviewer approved -> status: {approved.status}")
 
-    print("\n✅ Test 1 passed: Manual task board coordination works\n")
+        # Check by_status
+        done_tasks = board.by_status("done")
+        open_tasks = board.by_status("open")
+        assert len(done_tasks) == 1
+        assert len(open_tasks) == 2
+        print(f"  Done: {len(done_tasks)}, Open: {len(open_tasks)}")
 
+        print("\n  Test 1 passed: Manual task board coordination works\n")
 
-def test_team_runner_workflow():
-    """Test 2: Full TeamRunner workflow with real LLM."""
-    print("\n🤖 Test 2: TeamRunner — Automated Lead → Worker → Reviewer Workflow")
-    print("-" * 80)
+    # ========================================================================
+    # Test 2: Full TeamRunner Workflow
+    # ========================================================================
 
-    config_path = find_config_path()
-    agent = Agent.create(config_path)
+    def test_team_runner_workflow(self) -> None:
+        """Test 2: Full TeamRunner workflow with real LLM."""
+        print("\n Test 2: TeamRunner -- Automated Lead -> Worker -> Reviewer Workflow")
+        print("-" * 80)
 
-    config = TeamConfig(
-        max_tasks=20,
-        max_rounds=8,
-        poll_interval_ms=100,
-    )
-    team = Team("code-review-team", config)
-    team.add_member("lead", "lead")
-    team.add_member("worker-1", "worker")
-    team.add_member("reviewer", "reviewer")
+        agent = Agent.create(self.config_path)
 
-    print(f"  Team created with {team.member_count()} members")
+        config = TeamConfig(
+            max_tasks=20,
+            max_rounds=8,
+            poll_interval_ms=100,
+        )
+        team = Team("code-review-team", config)
+        team.add_member("lead", "lead")
+        team.add_member("worker-1", "worker")
+        team.add_member("reviewer", "reviewer")
 
-    runner = TeamRunner(team)
-    runner.bind_session("lead", agent.session("."))
-    runner.bind_session("worker-1", agent.session("."))
-    runner.bind_session("reviewer", agent.session("."))
+        print(f"  Team created with {team.member_count()} members")
 
-    goal = (
-        "Audit this Python codebase for code quality issues. "
-        "Identify and document the top 3 most important improvements."
-    )
-    print(f"  Goal: {goal}")
-    print("  Running team workflow (Lead decomposes → Workers execute → Reviewer approves)...")
+        runner = TeamRunner(team)
+        runner.bind_session("lead", agent.session("."))
+        runner.bind_session("worker-1", agent.session("."))
+        runner.bind_session("reviewer", agent.session("."))
 
-    start = time.time()
-    result = runner.run_until_done(goal)
-    elapsed = time.time() - start
+        goal = (
+            "Audit this Python codebase for code quality issues. "
+            "Identify and document the top 3 most important improvements."
+        )
+        print(f"  Goal: {goal}")
+        print("  Running team workflow (Lead decomposes -> Workers execute -> Reviewer approves)...")
 
-    print(f"\n  Completed in {elapsed:.1f}s, {result.rounds} reviewer rounds")
-    print(f"  Done tasks: {len(result.done_tasks)}")
-    print(f"  Rejected tasks: {len(result.rejected_tasks)}")
+        start = time.time()
+        result = runner.run_until_done(goal)
+        elapsed = time.time() - start
 
-    for task in result.done_tasks:
-        snippet = (task.result or "")[:120].replace("\n", " ")
-        print(f"\n  ✓ [{task.id[:8]}] {task.description}")
-        print(f"    Result: {snippet}{'...' if len(task.result or '') > 120 else ''}")
+        print(f"\n  Completed in {elapsed:.1f}s, {result.rounds} reviewer rounds")
+        print(f"  Done tasks: {len(result.done_tasks)}")
+        print(f"  Rejected tasks: {len(result.rejected_tasks)}")
 
-    assert len(result.done_tasks) > 0, "At least one task should be completed"
-    print("\n✅ Test 2 passed: TeamRunner executed end-to-end workflow\n")
+        for task in result.done_tasks:
+            snippet = (task.result or "")[:120].replace("\n", " ")
+            print(f"\n  [{task.id[:8]}] {task.description}")
+            print(f"    Result: {snippet}{'...' if len(task.result or '') > 120 else ''}")
 
+        assert len(result.done_tasks) > 0, "At least one task should be completed"
+        print("\n  Test 2 passed: TeamRunner executed end-to-end workflow\n")
 
-def test_team_runner_no_reviewer():
-    """Test 3: TeamRunner without a reviewer — tasks reach InReview state."""
-    print("\n🔧 Test 3: TeamRunner Without Reviewer (tasks reach InReview)")
-    print("-" * 80)
+    # ========================================================================
+    # Test 3: TeamRunner Without Reviewer
+    # ========================================================================
 
-    config_path = find_config_path()
-    agent = Agent.create(config_path)
+    def test_team_runner_no_reviewer(self) -> None:
+        """Test 3: TeamRunner without a reviewer -- tasks reach InReview state."""
+        print("\n Test 3: TeamRunner Without Reviewer (tasks reach InReview)")
+        print("-" * 80)
 
-    team = Team("no-reviewer-team", TeamConfig(max_rounds=3, poll_interval_ms=50))
-    team.add_member("lead", "lead")
-    team.add_member("worker-1", "worker")
-    # Note: no reviewer bound
+        agent = Agent.create(self.config_path)
 
-    runner = TeamRunner(team)
-    runner.bind_session("lead", agent.session("."))
-    runner.bind_session("worker-1", agent.session("."))
+        team = Team("no-reviewer-team", TeamConfig(max_rounds=3, poll_interval_ms=50))
+        team.add_member("lead", "lead")
+        team.add_member("worker-1", "worker")
+        # Note: no reviewer bound
 
-    board = runner.task_board()
-    result = runner.run_until_done("Count the number of Python files in this project")
+        runner = TeamRunner(team)
+        runner.bind_session("lead", agent.session("."))
+        runner.bind_session("worker-1", agent.session("."))
 
-    in_review = board.by_status("in_review")
-    done = board.by_status("done")
-    print(f"  InReview: {len(in_review)}, Done: {len(done)}")
+        board = runner.task_board()
+        result = runner.run_until_done("Count the number of Python files in this project")
 
-    # Without reviewer, tasks stay InReview
-    assert len(in_review) + len(done) > 0, "Tasks should have been executed"
-    print("\n✅ Test 3 passed: Team runs correctly without a reviewer\n")
+        in_review = board.by_status("in_review")
+        done = board.by_status("done")
+        print(f"  InReview: {len(in_review)}, Done: {len(done)}")
 
+        # Without reviewer, tasks stay InReview
+        assert len(in_review) + len(done) > 0, "Tasks should have been executed"
+        print("\n  Test 3 passed: Team runs correctly without a reviewer\n")
 
-def main():
-    print("=" * 80)
-    print("  A3S Code — Agent Teams Integration Tests")
-    print("=" * 80)
+    # ========================================================================
+    # Run All Tests
+    # ========================================================================
 
-    try:
-        test_manual_coordination()
-        test_team_runner_workflow()
-        test_team_runner_no_reviewer()
-
+    def run_all(self) -> None:
         print("=" * 80)
-        print("  ✅ All agent team tests passed!")
+        print("  A3S Code -- Agent Teams Integration Tests")
         print("=" * 80)
-    except Exception as e:
-        print(f"\n❌ Test failed: {e}")
-        raise
+
+        try:
+            self.test_manual_coordination()
+            self.test_team_runner_workflow()
+            self.test_team_runner_no_reviewer()
+
+            print("=" * 80)
+            print("  All agent team tests passed!")
+            print("=" * 80)
+        except Exception as e:
+            print(f"\n  Test failed: {e}")
+            raise
 
 
 if __name__ == "__main__":
-    main()
+    config_path = AgentTeamsTest.find_config_path()
+    suite = AgentTeamsTest(config_path)
+    suite.run_all()

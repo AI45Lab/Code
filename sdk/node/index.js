@@ -310,7 +310,7 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { Agent, Session, EventStream, builtinSkills } = nativeBinding
+const { Agent, Session, EventStream, builtinSkills, Team, TeamRunner, TeamTaskBoard } = nativeBinding
 
 // Add Symbol.asyncIterator to EventStream for `for await...of` support.
 // Each iteration calls .next() until done === true.
@@ -329,3 +329,6 @@ module.exports.Agent = Agent
 module.exports.Session = Session
 module.exports.EventStream = EventStream
 module.exports.builtinSkills = builtinSkills
+module.exports.Team = Team
+module.exports.TeamRunner = TeamRunner
+module.exports.TeamTaskBoard = TeamTaskBoard

@@ -7,6 +7,40 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [1.0.2] - 2026-03-04
+
+### New Features
+
+- **HCL `env()` function** — `env("VAR")` resolves environment variables at parse time; returns null if unset.
+- **HCL verbatim blocks** — `env {}` and `headers {}` blocks preserve keys verbatim (no camelCase conversion).
+- **Memory tier APIs** — `getWorking()`, `clearWorking()`, `getShortTerm()`, `clearShortTerm()` exposed in Node.js and Python SDKs.
+- **Queue metrics** — `queueMetrics()` returns a `MetricsSnapshot` with counters, gauges, and histograms.
+
+### Improvements
+
+- **Security hardening** — Enhanced default redaction patterns and robust regex in grep/ls tools.
+- **Windows path compatibility** — `canonicalize()` now strips `\\?\` UNC prefix on Windows.
+- **RwLock poison recovery** — `read_or_recover()` / `write_or_recover()` prevent panics from poisoned locks.
+- **Node.js TypeScript definitions** — Added 13 missing method declarations to `index.d.ts` (lane queue, memory API, session metadata).
+- **Documentation** — All example pages updated: Python sync API, TypeScript code blocks, correct event field names.
+
+---
+
+## [1.0.1] - 2026-03-03
+
+### New Features
+
+- **MCP live tool injection** — Agent loop refreshes tool list from live `ToolExecutor` each turn.
+- **MCP error tracking** — `McpManager.connect_errors` tracks per-server failures, exposed in `mcpStatus()`.
+- **SDK introspection** — `toolNames()`, `toolDefinitions()`, `refreshMcpTools()` in both Node.js and Python SDKs.
+- **MCP removal** — `removeMcpServer()` for session-level MCP cleanup.
+
+### Bug Fixes
+
+- **Node.js stream fix** — `stream()` return type corrected to `Promise<EventStream>` in TypeScript definitions.
+
+---
+
 ## [1.0.0] - 2026-03-02
 
 ### New Features

@@ -42,7 +42,14 @@ pub enum PermissionDecision {
 /// - `Read(src/**/*.rs)` - matches Rust files in src/
 /// - `Grep(*)` - matches all grep invocations
 /// - `mcp__pencil` - matches all pencil MCP tools
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+///
+/// Deserialization supports both plain strings and `{rule: "..."}` objects:
+/// ```yaml
+/// allow:
+///   - read                   # plain string
+///   - rule: "Bash(cargo:*)"  # struct form
+/// ```
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct PermissionRule {
     /// The original rule string
     pub rule: String,
@@ -52,6 +59,28 @@ pub struct PermissionRule {
     /// Parsed argument pattern (None means match all)
     #[serde(skip)]
     arg_pattern: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for PermissionRule {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        /// Helper enum to accept both `"read"` and `{rule: "read"}` in YAML/JSON.
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum RuleRepr {
+            Plain(String),
+            Struct { rule: String },
+        }
+
+        let rule_str = match RuleRepr::deserialize(deserializer)? {
+            RuleRepr::Plain(s) => s,
+            RuleRepr::Struct { rule } => rule,
+        };
+        // `new()` calls `parse_rule()` to populate tool_name and arg_pattern.
+        Ok(PermissionRule::new(&rule_str))
+    }
 }
 
 impl PermissionRule {
@@ -825,6 +854,55 @@ mod tests {
         assert!(policy.is_allowed("Bash", &json!({"command": "cargo build"})));
         assert!(policy.is_allowed("Bash", &json!({"command": "npm run test"})));
         assert!(policy.is_allowed("Grep", &json!({"pattern": "foo"})));
+    }
+
+    // ========================================================================
+    // PermissionRule Deserialization Tests
+    // ========================================================================
+
+    #[test]
+    fn test_rule_deserialize_plain_string() {
+        // YAML: `- read`
+        let rule: PermissionRule = serde_yaml::from_str("read").unwrap();
+        assert_eq!(rule.rule, "read");
+        assert!(rule.matches("read", &json!({})));
+        assert!(!rule.matches("write", &json!({})));
+    }
+
+    #[test]
+    fn test_rule_deserialize_plain_string_with_pattern() {
+        // YAML: `- "Bash(cargo:*)"`
+        let rule: PermissionRule = serde_yaml::from_str("\"Bash(cargo:*)\"").unwrap();
+        assert_eq!(rule.rule, "Bash(cargo:*)");
+        assert!(rule.matches("Bash", &json!({"command": "cargo build"})));
+    }
+
+    #[test]
+    fn test_rule_deserialize_struct_form() {
+        // YAML: `- rule: read`
+        let rule: PermissionRule = serde_yaml::from_str("rule: read").unwrap();
+        assert_eq!(rule.rule, "read");
+        assert!(rule.matches("read", &json!({})));
+    }
+
+    #[test]
+    fn test_rule_deserialize_in_policy() {
+        // Full policy YAML with mixed formats
+        let yaml = r#"
+allow:
+  - read
+  - "Bash(cargo:*)"
+  - rule: grep
+deny:
+  - write
+"#;
+        let policy: PermissionPolicy = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(policy.allow.len(), 3);
+        assert_eq!(policy.deny.len(), 1);
+        assert!(policy.is_allowed("read", &json!({})));
+        assert!(policy.is_allowed("Bash", &json!({"command": "cargo build"})));
+        assert!(policy.is_allowed("grep", &json!({})));
+        assert!(policy.is_denied("write", &json!({})));
     }
 
     // ========================================================================

@@ -1,6 +1,6 @@
 {
   "name": "@a3s-lab/code",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "A3S Code - Native AI coding agent library for Node.js",
   "main": "index.js",
   "types": "index.d.ts",
@@ -27,7 +27,9 @@
     "*.node"
   ],
   "devDependencies": {
-    "@napi-rs/cli": "^2"
+    "@napi-rs/cli": "^2",
+    "@types/node": "^25.3.3",
+    "typescript": "^5.9.3"
   },
   "scripts": {
     "artifacts": "napi artifacts",
@@ -37,12 +39,12 @@
     "test": "node test.mjs"
   },
   "optionalDependencies": {
-    "@a3s-lab/code-darwin-arm64": "1.0.1",
-    "@a3s-lab/code-darwin-x64": "1.0.1",
-    "@a3s-lab/code-linux-x64-gnu": "1.0.1",
-    "@a3s-lab/code-linux-x64-musl": "1.0.1",
-    "@a3s-lab/code-linux-arm64-gnu": "1.0.1",
-    "@a3s-lab/code-linux-arm64-musl": "1.0.1",
-    "@a3s-lab/code-win32-x64-msvc": "1.0.1"
+    "@a3s-lab/code-darwin-arm64": "1.0.2",
+    "@a3s-lab/code-darwin-x64": "1.0.2",
+    "@a3s-lab/code-linux-arm64-gnu": "1.0.2",
+    "@a3s-lab/code-linux-arm64-musl": "1.0.2",
+    "@a3s-lab/code-linux-x64-gnu": "1.0.2",
+    "@a3s-lab/code-linux-x64-musl": "1.0.2",
+    "@a3s-lab/code-win32-x64-msvc": "1.0.2"
   }
 }

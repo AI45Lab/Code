@@ -819,9 +819,10 @@ impl Agent {
 
         // Register task delegation tools (task, parallel_task).
         // These require an LLM client to spawn isolated child agent loops.
+        // When MCP manager is available, pass it through so child sessions inherit MCP tools.
         {
             use crate::subagent::{load_agents_from_dir, AgentRegistry};
-            use crate::tools::register_task;
+            use crate::tools::register_task_with_mcp;
             let agent_registry = AgentRegistry::new();
             for dir in self
                 .code_config
@@ -833,11 +834,12 @@ impl Agent {
                     agent_registry.register(agent);
                 }
             }
-            register_task(
+            register_task_with_mcp(
                 tool_executor.registry(),
                 Arc::clone(&llm_client),
                 Arc::new(agent_registry),
                 canonical.display().to_string(),
+                opts.mcp_manager.clone(),
             );
         }
 

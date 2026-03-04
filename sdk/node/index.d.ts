@@ -190,7 +190,26 @@ export interface InlineSkill {
   content: string;
 }
 
-export interface SessionQueueConfig {
+export interface SessionQueueConfigOptions {
+  queryConcurrency?: number;
+  executeConcurrency?: number;
+  generateConcurrency?: number;
+  controlConcurrency?: number;
+  controlMaxConcurrency?: number;
+  queryMaxConcurrency?: number;
+  executeMaxConcurrency?: number;
+  generateMaxConcurrency?: number;
+  enableDlq?: boolean;
+  dlqMaxSize?: number;
+  enableMetrics?: boolean;
+  enableAlerts?: boolean;
+  enableAllFeatures?: boolean;
+  timeoutMs?: number;
+}
+
+/** Lane-based queue configuration (can be used as plain object or class). */
+export declare class SessionQueueConfig {
+  constructor();
   queryConcurrency?: number;
   executeConcurrency?: number;
   generateConcurrency?: number;
@@ -198,6 +217,20 @@ export interface SessionQueueConfig {
   dlqMaxSize?: number;
   enableMetrics?: boolean;
   enableAlerts?: boolean;
+  /** Enable all lane features (metrics, DLQ, alerts). */
+  withLaneFeatures(): void;
+  /** Set query lane concurrency. */
+  setQueryConcurrency(n: number): void;
+  /** Set execute lane concurrency. */
+  setExecuteConcurrency(n: number): void;
+  /** Set generate lane concurrency. */
+  setGenerateConcurrency(n: number): void;
+  /** Set control lane concurrency. */
+  setControlConcurrency(n: number): void;
+  /** Enable metrics collection. */
+  enableMetricsCollection(): void;
+  /** Enable dead letter queue. */
+  enableDlqCollection(): void;
 }
 
 export interface SessionOptions {
@@ -210,9 +243,11 @@ export interface SessionOptions {
   /** Extra directories to scan for agent files. */
   agentDirs?: string[];
   /** Optional queue configuration for lane-based tool execution. */
-  queueConfig?: SessionQueueConfig;
+  queueConfig?: SessionQueueConfig | SessionQueueConfigOptions;
   /** Allow all tools without HITL confirmation (default: false). */
   permissive?: boolean;
+  /** Alias for permissive — auto-approve all tool calls. */
+  autoApprove?: boolean;
   /** Enable planning mode (default: false). */
   planning?: boolean;
   /** Enable goal tracking (default: false). */
@@ -269,11 +304,11 @@ export declare class Session {
   /** Send a prompt and wait for the complete response. */
   send(prompt: string, history?: MessageObject[]): Promise<AgentResult>;
   /** Send a prompt and stream events as they arrive. */
-  stream(prompt: string, history?: MessageObject[]): EventStream;
+  stream(prompt: string, history?: MessageObject[]): Promise<EventStream>;
   /** Send a prompt with image attachments and wait for the complete response. */
   sendWithAttachments(prompt: string, attachments: AttachmentObject[], history?: MessageObject[]): Promise<AgentResult>;
   /** Send a prompt with image attachments and stream events. */
-  streamWithAttachments(prompt: string, attachments: AttachmentObject[], history?: MessageObject[]): EventStream;
+  streamWithAttachments(prompt: string, attachments: AttachmentObject[], history?: MessageObject[]): Promise<EventStream>;
   /** Get the full conversation history for this session. */
   history(): MessageObject[];
   /** Execute a tool directly (no LLM involved). */
@@ -284,12 +319,120 @@ export declare class Session {
   bash(command: string): Promise<string>;
   /** Find files matching a glob pattern within the session workspace. */
   glob(pattern: string): Promise<string[]>;
+  /** Search for a pattern in files within the session workspace. */
+  grep(pattern: string): Promise<string>;
   /** Persist the session to the configured session store. */
   save(): Promise<void>;
   /** Load session state from the configured session store. */
   load(): Promise<void>;
   /** Returns true if a lane queue is configured for this session. */
   hasQueue(): boolean;
+  /** Get queue statistics (requires queue to be configured). */
+  queueStats(): Record<string, unknown>;
+  /** Get dead letter queue entries. */
+  deadLetters(): Array<Record<string, unknown>>;
+  /**
+   * Register a lifecycle hook on this session.
+   * @param name - Unique hook name
+   * @param event - Hook event type: "pre_tool_use" | "post_tool_use" | "generate_start" | "on_error"
+   * @param filter - Optional filter (e.g. `{ tool: "bash" }`) or callback function, or `null`
+   * @param options - Optional hook options (e.g. `{ priority: 10 }`)
+   */
+  registerHook(
+    name: string,
+    event: string,
+    filter?: Record<string, string> | ((event: Record<string, unknown>) => unknown) | null,
+    options?: Record<string, unknown>,
+  ): void;
+  /** Unregister a previously registered hook by name. Returns true if found. */
+  unregisterHook(name: string): boolean;
+  /** Return the number of hooks currently registered on this session. */
+  hookCount(): number;
+  /**
+   * Set the lane handler mode for a specific lane.
+   * @param lane - Lane name: "control" | "query" | "execute" | "generate"
+   * @param config - Handler configuration (e.g. `{ mode: "external", timeoutMs: 60000 }`)
+   */
+  setLaneHandler(lane: string, config: Record<string, unknown>): Promise<void>;
+  /** Get pending external tasks (when a lane is in external mode). */
+  pendingExternalTasks(): Promise<Array<Record<string, unknown>>>;
+  /**
+   * Complete an external task with a result.
+   * @param taskId - The external task ID
+   * @param result - Result object (e.g. `{ success, result, error }`)
+   */
+  completeExternalTask(taskId: string, result: Record<string, unknown>): Promise<boolean>;
+  /**
+   * Connect an MCP server and register its tools on this session.
+   * @param name - Server name
+   * @param transport - "stdio" | "http" | "streamable-http" (default: "stdio")
+   * @param command - Executable for stdio transport
+   * @param args - Arguments for stdio transport
+   * @param url - URL for http/streamable-http transport
+   * @param headers - HTTP headers for http/streamable-http transport
+   * @param env - Extra environment variables for stdio transport
+   * @returns Number of tools registered from the server
+   */
+  addMcpServer(
+    name: string,
+    transport?: "stdio" | "http" | "streamable-http",
+    command?: string,
+    args?: string[],
+    url?: string,
+    headers?: Record<string, string>,
+    env?: Record<string, string>,
+  ): Promise<number>;
+  /**
+   * Disconnect and unregister an MCP server.
+   * @param name - Server name (must match the name used in addMcpServer)
+   */
+  removeMcpServer(name: string): Promise<void>;
+  /** Return connection status for all MCP servers. */
+  mcpStatus(): Promise<Array<{ name: string; connected: boolean; toolCount: number; error?: string }>>;
+  /** Return the names of all tools currently registered on this session. */
+  toolNames(): string[];
+  /** Return full tool definitions (name, description, schema) for all registered tools. */
+  toolDefinitions(): Array<Record<string, unknown>>;
+
+  // Lane Queue — submit / batch / metrics
+  /** Submit a command to a named lane queue. Returns the task ID. */
+  submit(lane: string, payload: object): Promise<unknown>;
+  /** Batch-submit multiple commands to a lane queue. Returns task IDs. */
+  submitBatch(lane: string, payloads: object[]): Promise<unknown[]>;
+  /** Return a detailed metrics snapshot for the lane queue, or null if metrics are disabled. */
+  queueMetrics(): Promise<Record<string, unknown> | null>;
+
+  // Session Metadata
+  /** The unique session ID. */
+  readonly sessionId: string;
+  /** The workspace directory for this session. */
+  readonly workspace: string;
+  /** Warning message from session initialization, if any. */
+  readonly initWarning: string | null;
+  /** Whether a memory store is configured for this session. */
+  readonly hasMemory: boolean;
+
+  // Memory API
+  /** Record a successful task outcome in memory. */
+  rememberSuccess(task: string, tools: string[], result: string): Promise<void>;
+  /** Record a failed task outcome in memory. */
+  rememberFailure(task: string, error: string, tools: string[]): Promise<void>;
+  /** Recall memory entries similar to a query. */
+  recallSimilar(query: string, limit?: number): Promise<unknown[]>;
+  /** Recall memory entries matching specific tags. */
+  recallByTags(tags: string[], limit?: number): Promise<unknown[]>;
+  /** Return the most recent memory entries. */
+  memoryRecent(limit?: number): Promise<unknown[]>;
+  /** Return memory store statistics. */
+  memoryStats(): Promise<Record<string, unknown>>;
+  /** Return all working-memory entries. */
+  getWorking(): Promise<unknown[]>;
+  /** Clear all working-memory entries. */
+  clearWorking(): Promise<void>;
+  /** Return all short-term memory entries. */
+  getShortTerm(): Promise<unknown[]>;
+  /** Clear all short-term memory entries. */
+  clearShortTerm(): Promise<void>;
 }
 
 // ============================================================================
@@ -315,6 +458,115 @@ export declare class Agent {
    * @param options - Optional session configuration overrides
    */
   resumeSession(sessionId: string, sessionStoreDir: string, options?: SessionOptions): Session;
+  /** Re-discover tools from all configured MCP servers. */
+  refreshMcpTools(): Promise<void>;
+}
+
+// ============================================================================
+// Agent Teams
+// ============================================================================
+
+/** Team configuration. */
+export interface TeamConfig {
+  /** Maximum concurrent tasks on the board (default: 50). */
+  maxTasks?: number;
+  /** Message channel buffer size (default: 128). */
+  channelBuffer?: number;
+  /** Maximum coordinator rounds before `runUntilDone` exits (default: 10). */
+  maxRounds?: number;
+  /** Worker/Reviewer polling interval in milliseconds (default: 200). */
+  pollIntervalMs?: number;
+}
+
+/** A task snapshot from the team board (read-only). */
+export interface TeamTask {
+  id: string;
+  description: string;
+  postedBy: string;
+  assignedTo: string | null;
+  /** Task status: "open", "in_progress", "in_review", "done", or "rejected". */
+  status: string;
+  result: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** Result returned by `TeamRunner.runUntilDone()`. */
+export interface TeamRunResult {
+  doneTasks: TeamTask[];
+  rejectedTasks: TeamTask[];
+  rounds: number;
+}
+
+/** Board statistics. */
+export interface BoardStats {
+  open: number;
+  inProgress: number;
+  inReview: number;
+  done: number;
+  rejected: number;
+  total: number;
+}
+
+/** Shared task board for team coordination. */
+export declare class TeamTaskBoard {
+  /** Post a new task. Returns the task ID, or null if the board is full. */
+  post(description: string, postedBy: string, assignTo?: string): string | null;
+  /** Claim the next open or rejected task for a member. */
+  claim(memberId: string): TeamTask | null;
+  /** Mark a task as complete with a result. Returns true if found. */
+  complete(taskId: string, result: string): boolean;
+  /** Approve a task (reviewer action). Returns true if the task was in InReview state. */
+  approve(taskId: string): boolean;
+  /** Reject a task back to open (reviewer action). Returns true if found. */
+  reject(taskId: string): boolean;
+  /** Get a task by ID. */
+  get(taskId: string): TeamTask | null;
+  /** Get all tasks with the given status string. */
+  byStatus(status: string): TeamTask[];
+  /** Get all tasks assigned to a member. */
+  byAssignee(memberId: string): TeamTask[];
+  /** Summary stats. */
+  stats(): BoardStats;
+  /** Total number of tasks on the board. */
+  readonly len: number;
+  /** True if the board has no tasks. */
+  readonly isEmpty: boolean;
+}
+
+/**
+ * Multi-agent team coordinator.
+ *
+ * Create the team, add members, then pass it to `TeamRunner` to execute.
+ */
+export declare class Team {
+  constructor(name: string, config?: TeamConfig);
+  /** Add a member to the team. */
+  addMember(memberId: string, role: "lead" | "worker" | "reviewer"): void;
+  /** Remove a member. Returns true if the member was found. */
+  removeMember(memberId: string): boolean;
+  /** Number of registered members. */
+  readonly memberCount: number;
+  /** Get the shared task board for inspection. */
+  taskBoard(): TeamTaskBoard;
+}
+
+/**
+ * Binds an agent team to real `Session` executors and runs the workflow.
+ *
+ * The team object is consumed on construction.
+ */
+export declare class TeamRunner {
+  constructor(team: Team);
+  /** Bind a `Session` to a team member. */
+  bindSession(memberId: string, session: Session): void;
+  /** Get the shared task board for inspection. */
+  taskBoard(): TeamTaskBoard;
+  /**
+   * Run the Lead -> Worker -> Reviewer workflow until all tasks are done.
+   * @param goal - High-level goal to decompose and execute
+   */
+  runUntilDone(goal: string): Promise<TeamRunResult>;
 }
 
 // ============================================================================

@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "node",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["node"],
+    "baseUrl": "..",
+    "paths": {
+      "@a3s-lab/code": ["./index"]
+    }
+  },
+  "include": ["./*.ts"]
+}

@@ -16,6 +16,7 @@
 
 use crate::agent::{AgentConfig, AgentEvent, AgentLoop};
 use crate::llm::LlmClient;
+use crate::mcp::manager::McpManager;
 use crate::subagent::AgentRegistry;
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
 use anyhow::{Context, Result};
@@ -66,6 +67,8 @@ pub struct TaskExecutor {
     llm_client: Arc<dyn LlmClient>,
     /// Workspace path shared with child agents
     workspace: String,
+    /// Optional MCP manager for registering MCP tools in child sessions
+    mcp_manager: Option<Arc<McpManager>>,
 }
 
 impl TaskExecutor {
@@ -79,6 +82,22 @@ impl TaskExecutor {
             registry,
             llm_client,
             workspace,
+            mcp_manager: None,
+        }
+    }
+
+    /// Create a new task executor with MCP manager for tool inheritance
+    pub fn with_mcp(
+        registry: Arc<AgentRegistry>,
+        llm_client: Arc<dyn LlmClient>,
+        workspace: String,
+        mcp_manager: Arc<McpManager>,
+    ) -> Self {
+        Self {
+            registry,
+            llm_client,
+            workspace,
+            mcp_manager: Some(mcp_manager),
         }
     }
 
@@ -109,6 +128,24 @@ impl TaskExecutor {
         // Build a child ToolExecutor. Task tools are intentionally omitted
         // here to prevent unlimited subagent nesting.
         let mut child_executor = crate::tools::ToolExecutor::new(self.workspace.clone());
+
+        // Register MCP tools so child agents can access MCP servers.
+        if let Some(ref mcp) = self.mcp_manager {
+            let all_tools = mcp.get_all_tools().await;
+            let mut by_server: std::collections::HashMap<String, Vec<crate::mcp::protocol::McpTool>> =
+                std::collections::HashMap::new();
+            for (server, tool) in all_tools {
+                by_server.entry(server).or_default().push(tool);
+            }
+            for (server_name, tools) in by_server {
+                let wrappers =
+                    crate::mcp::tools::create_mcp_tools(&server_name, tools, Arc::clone(mcp));
+                for wrapper in wrappers {
+                    child_executor.register_dynamic_tool(wrapper);
+                }
+            }
+        }
+
         if !agent.permissions.allow.is_empty() || !agent.permissions.deny.is_empty() {
             child_executor.set_guard_policy(Arc::new(agent.permissions.clone())
                 as Arc<dyn crate::permissions::PermissionChecker>);
