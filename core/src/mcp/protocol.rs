@@ -489,6 +489,7 @@ impl<'de> Deserialize<'de> for McpServerConfig {
             .and_then(|v| serde_json::from_value(v).ok());
         let tool_timeout_secs = map
             .remove("tool_timeout_secs")
+            .or_else(|| map.remove("toolTimeoutSecs"))
             .and_then(|v| v.as_u64())
             .unwrap_or(60);
 

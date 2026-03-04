@@ -481,21 +481,44 @@ impl CodeConfig {
 /// Block labels that should be collected into JSON arrays.
 const HCL_ARRAY_BLOCKS: &[&str] = &["providers", "models", "mcp_servers"];
 
+/// Block identifiers whose body attribute keys should be preserved verbatim
+/// (not converted to camelCase). These blocks contain user-defined key-value maps
+/// like environment variables or HTTP headers, not struct field names.
+const HCL_VERBATIM_BLOCKS: &[&str] = &["env", "headers"];
+
 /// Convert an HCL body into a JSON value with camelCase keys.
 fn hcl_body_to_json(body: &hcl::Body) -> JsonValue {
+    hcl_body_to_json_inner(body, false)
+}
+
+/// Inner conversion with `verbatim_keys` flag.
+///
+/// When `verbatim_keys` is true, attribute keys are preserved as-is
+/// (used for blocks like `env { ... }` where keys are user data).
+fn hcl_body_to_json_inner(body: &hcl::Body, verbatim_keys: bool) -> JsonValue {
     let mut map = serde_json::Map::new();
 
     // Process attributes (key = value)
     for attr in body.attributes() {
-        let key = snake_to_camel(attr.key.as_str());
+        let key = if verbatim_keys {
+            attr.key.as_str().to_string()
+        } else {
+            snake_to_camel(attr.key.as_str())
+        };
         let value = hcl_expr_to_json(attr.expr());
         map.insert(key, value);
     }
 
     // Process blocks (repeated structures like `providers { ... }`)
     for block in body.blocks() {
-        let key = snake_to_camel(block.identifier.as_str());
-        let block_value = hcl_body_to_json(block.body());
+        let key = if verbatim_keys {
+            block.identifier.as_str().to_string()
+        } else {
+            snake_to_camel(block.identifier.as_str())
+        };
+        // Blocks in HCL_VERBATIM_BLOCKS contain user-defined maps, not struct fields
+        let child_verbatim = HCL_VERBATIM_BLOCKS.contains(&block.identifier.as_str());
+        let block_value = hcl_body_to_json_inner(block.body(), child_verbatim);
 
         if HCL_ARRAY_BLOCKS.contains(&block.identifier.as_str()) {
             // Collect into array
@@ -549,14 +572,16 @@ fn hcl_expr_to_json(expr: &hcl::Expression) -> JsonValue {
         hcl::Expression::Null => JsonValue::Null,
         hcl::Expression::Array(arr) => JsonValue::Array(arr.iter().map(hcl_expr_to_json).collect()),
         hcl::Expression::Object(obj) => {
+            // Object expression keys are user data (env vars, headers, etc.),
+            // NOT struct field names — preserve them verbatim.
             let map: serde_json::Map<String, JsonValue> = obj
                 .iter()
                 .map(|(k, v)| {
                     let key = match k {
-                        hcl::ObjectKey::Identifier(id) => snake_to_camel(id.as_str()),
+                        hcl::ObjectKey::Identifier(id) => id.as_str().to_string(),
                         hcl::ObjectKey::Expression(expr) => {
                             if let hcl::Expression::String(s) = expr {
-                                snake_to_camel(s)
+                                s.clone()
                             } else {
                                 format!("{:?}", expr)
                             }
@@ -568,8 +593,61 @@ fn hcl_expr_to_json(expr: &hcl::Expression) -> JsonValue {
                 .collect();
             JsonValue::Object(map)
         }
+        hcl::Expression::FuncCall(func_call) => eval_func_call(func_call),
+        hcl::Expression::TemplateExpr(tmpl) => eval_template_expr(tmpl),
         _ => JsonValue::String(format!("{:?}", expr)),
     }
+}
+
+/// Evaluate an HCL function call expression.
+///
+/// Supported functions:
+/// - `env("VAR_NAME")` — read environment variable, returns empty string if unset
+fn eval_func_call(func_call: &hcl::expr::FuncCall) -> JsonValue {
+    let name = func_call.name.name.as_str();
+    match name {
+        "env" => {
+            if let Some(arg) = func_call.args.first() {
+                let var_name = match arg {
+                    hcl::Expression::String(s) => s.as_str(),
+                    _ => {
+                        tracing::warn!(
+                            "env() expects a string argument, got: {:?}",
+                            arg
+                        );
+                        return JsonValue::Null;
+                    }
+                };
+                match std::env::var(var_name) {
+                    Ok(val) => JsonValue::String(val),
+                    Err(_) => {
+                        tracing::debug!("env(\"{}\") is not set, returning null", var_name);
+                        JsonValue::Null
+                    }
+                }
+            } else {
+                tracing::warn!("env() called with no arguments");
+                JsonValue::Null
+            }
+        }
+        _ => {
+            tracing::warn!("Unsupported HCL function: {}()", name);
+            JsonValue::String(format!("{}()", name))
+        }
+    }
+}
+
+/// Evaluate an HCL template expression (string interpolation).
+///
+/// For quoted strings like `"prefix-${env("VAR")}-suffix"`, the template contains
+/// literal parts and interpolated expressions that we evaluate and concatenate.
+fn eval_template_expr(tmpl: &hcl::expr::TemplateExpr) -> JsonValue {
+    // TemplateExpr is either a quoted string or heredoc containing template directives.
+    // We convert it to string representation — the hcl-rs library stores the raw template.
+    // For simple cases, just return the string form. For interpolations, we'd need a
+    // full template evaluator which hcl-rs doesn't provide.
+    // Best effort: convert to display string.
+    JsonValue::String(format!("{}", tmpl))
 }
 
 #[cfg(test)]
@@ -1628,5 +1706,152 @@ mod tests {
 
         // Test pressure threshold
         assert_eq!(queue.pressure_threshold, Some(50));
+    }
+
+    #[test]
+    fn test_hcl_env_function_resolved() {
+        // Set a test env var
+        std::env::set_var("A3S_TEST_HCL_KEY", "test-secret-key-123");
+
+        let hcl_str = r#"
+            providers {
+                name    = "test"
+                api_key = env("A3S_TEST_HCL_KEY")
+            }
+        "#;
+
+        let body: hcl::Body = hcl::from_str(hcl_str).unwrap();
+        let json = hcl_body_to_json(&body);
+
+        // The providers block should be an array
+        let providers = json.get("providers").unwrap();
+        let provider = providers.as_array().unwrap().first().unwrap();
+        let api_key = provider.get("apiKey").unwrap();
+
+        assert_eq!(api_key.as_str().unwrap(), "test-secret-key-123");
+
+        // Clean up
+        std::env::remove_var("A3S_TEST_HCL_KEY");
+    }
+
+    #[test]
+    fn test_hcl_env_function_unset_returns_null() {
+        // Make sure this var doesn't exist
+        std::env::remove_var("A3S_TEST_NONEXISTENT_VAR_12345");
+
+        let hcl_str = r#"
+            providers {
+                name    = "test"
+                api_key = env("A3S_TEST_NONEXISTENT_VAR_12345")
+            }
+        "#;
+
+        let body: hcl::Body = hcl::from_str(hcl_str).unwrap();
+        let json = hcl_body_to_json(&body);
+
+        let providers = json.get("providers").unwrap();
+        let provider = providers.as_array().unwrap().first().unwrap();
+        let api_key = provider.get("apiKey").unwrap();
+
+        assert!(api_key.is_null(), "Unset env var should return null");
+    }
+
+    #[test]
+    fn test_hcl_mcp_env_block_preserves_var_names() {
+        // env block keys are environment variable names — must NOT be camelCase'd
+        std::env::set_var("A3S_TEST_SECRET", "my-secret");
+
+        let hcl_str = r#"
+            mcp_servers {
+                name      = "test-server"
+                transport = "stdio"
+                command   = "echo"
+                env = {
+                    API_KEY           = "sk-test-123"
+                    ANTHROPIC_API_KEY = env("A3S_TEST_SECRET")
+                    SIMPLE            = "value"
+                }
+            }
+        "#;
+
+        let body: hcl::Body = hcl::from_str(hcl_str).unwrap();
+        let json = hcl_body_to_json(&body);
+
+        let servers = json.get("mcpServers").unwrap().as_array().unwrap();
+        let server = &servers[0];
+        let env = server.get("env").unwrap().as_object().unwrap();
+
+        // Keys must be preserved verbatim, not converted to camelCase
+        assert_eq!(env.get("API_KEY").unwrap().as_str().unwrap(), "sk-test-123");
+        assert_eq!(
+            env.get("ANTHROPIC_API_KEY").unwrap().as_str().unwrap(),
+            "my-secret"
+        );
+        assert_eq!(env.get("SIMPLE").unwrap().as_str().unwrap(), "value");
+
+        // These mangled keys must NOT exist
+        assert!(env.get("apiKey").is_none(), "env var key should not be camelCase'd");
+        assert!(env.get("APIKEY").is_none(), "env var key should not have underscores stripped");
+        assert!(env.get("anthropicApiKey").is_none());
+
+        std::env::remove_var("A3S_TEST_SECRET");
+    }
+
+    #[test]
+    fn test_hcl_mcp_env_as_block_syntax() {
+        // Test block syntax: env { KEY = "value" } (no equals sign)
+        let hcl_str = r#"
+            mcp_servers {
+                name      = "test-server"
+                transport = "stdio"
+                command   = "echo"
+                env {
+                    MY_VAR     = "hello"
+                    OTHER_VAR  = "world"
+                }
+            }
+        "#;
+
+        let body: hcl::Body = hcl::from_str(hcl_str).unwrap();
+        let json = hcl_body_to_json(&body);
+
+        let servers = json.get("mcpServers").unwrap().as_array().unwrap();
+        let server = &servers[0];
+        let env = server.get("env").unwrap().as_object().unwrap();
+
+        assert_eq!(env.get("MY_VAR").unwrap().as_str().unwrap(), "hello");
+        assert_eq!(env.get("OTHER_VAR").unwrap().as_str().unwrap(), "world");
+        assert!(env.get("myVar").is_none(), "block env keys should not be camelCase'd");
+    }
+
+    #[test]
+    fn test_hcl_mcp_full_deserialization_with_env() {
+        // End-to-end: HCL string → CodeConfig with McpServerConfig.env populated
+        std::env::set_var("A3S_TEST_MCP_KEY", "resolved-secret");
+
+        let hcl_str = r#"
+            mcp_servers {
+                name      = "fetch"
+                transport = "stdio"
+                command   = "npx"
+                args      = ["-y", "@modelcontextprotocol/server-fetch"]
+                env = {
+                    NODE_ENV = "production"
+                    API_KEY  = env("A3S_TEST_MCP_KEY")
+                }
+                tool_timeout_secs = 120
+            }
+        "#;
+
+        let config = CodeConfig::from_hcl(hcl_str).unwrap();
+        assert_eq!(config.mcp_servers.len(), 1);
+
+        let server = &config.mcp_servers[0];
+        assert_eq!(server.name, "fetch");
+        assert_eq!(server.env.get("NODE_ENV").unwrap(), "production");
+        assert_eq!(server.env.get("API_KEY").unwrap(), "resolved-secret");
+        assert_eq!(server.tool_timeout_secs, 120);
+
+        std::env::remove_var("A3S_TEST_MCP_KEY");
     }
 }

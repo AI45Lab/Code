@@ -183,10 +183,13 @@ impl PermissionRule {
             return text.starts_with(prefix);
         }
 
+        // Normalize Windows backslashes to forward slashes for consistent matching
+        let text = text.replace('\\', "/");
+
         // Convert glob pattern to regex pattern
         let regex_pattern = Self::glob_to_regex(pattern);
         if let Ok(re) = regex::Regex::new(&regex_pattern) {
-            re.is_match(text)
+            re.is_match(&text)
         } else {
             // Fallback to simple prefix match if regex fails
             text.starts_with(pattern)
@@ -215,14 +218,14 @@ impl PermissionRule {
                             i += 2;
                         }
                     } else {
-                        // * matches anything except /
-                        regex.push_str("[^/]*");
+                        // * matches anything except path separators
+                        regex.push_str("[^/\\\\]*");
                         i += 1;
                     }
                 }
                 '?' => {
-                    // ? matches any single character except /
-                    regex.push_str("[^/]");
+                    // ? matches any single character except path separators
+                    regex.push_str("[^/\\\\]");
                     i += 1;
                 }
                 '.' | '+' | '^' | '$' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '\\' => {

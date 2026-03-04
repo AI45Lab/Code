@@ -143,7 +143,8 @@ impl FileSystemContextProvider {
             return true;
         }
 
-        let path_str = path.to_string_lossy();
+        // Normalize to forward slashes for consistent cross-platform glob matching
+        let path_str = path.to_string_lossy().replace('\\', "/");
         self.config.include_patterns.iter().any(|pattern| {
             glob::Pattern::new(pattern)
                 .map(|p| p.matches(&path_str))
@@ -152,7 +153,8 @@ impl FileSystemContextProvider {
     }
 
     fn matches_exclude_patterns(&self, path: &Path) -> bool {
-        let path_str = path.to_string_lossy();
+        // Normalize to forward slashes for consistent cross-platform glob matching
+        let path_str = path.to_string_lossy().replace('\\', "/");
         self.config.exclude_patterns.iter().any(|pattern| {
             glob::Pattern::new(pattern)
                 .map(|p| p.matches(&path_str))

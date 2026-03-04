@@ -130,10 +130,18 @@ impl Tool for GrepTool {
             }
 
             file_count += 1;
-            let rel_path = file_path
-                .strip_prefix(&ctx.workspace)
-                .unwrap_or(file_path)
-                .to_string_lossy();
+            // Normalize paths for consistent strip_prefix (avoids UNC prefix mismatch on Windows)
+            let file_display = file_path.to_string_lossy().replace('\\', "/");
+            let workspace_display = ctx.workspace.to_string_lossy().replace('\\', "/");
+            let rel_path = if let Some(stripped) = file_display.strip_prefix(&workspace_display) {
+                stripped.trim_start_matches('/').to_string()
+            } else {
+                file_path
+                    .strip_prefix(&ctx.workspace)
+                    .unwrap_or(file_path)
+                    .to_string_lossy()
+                    .to_string()
+            };
 
             for &match_idx in &file_matches {
                 if total_size > MAX_OUTPUT_SIZE {

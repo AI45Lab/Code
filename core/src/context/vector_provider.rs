@@ -377,7 +377,7 @@ fn matches_patterns(path: &Path, patterns: &[String], default_if_empty: bool) ->
     if patterns.is_empty() {
         return default_if_empty;
     }
-    let path_str = path.to_string_lossy();
+    let path_str = path.to_string_lossy().replace('\\', "/");
     patterns.iter().any(|pattern| {
         glob::Pattern::new(pattern)
             .map(|p| p.matches(&path_str))

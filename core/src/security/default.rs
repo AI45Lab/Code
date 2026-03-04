@@ -25,9 +25,22 @@ impl SensitivePattern {
     pub fn new(name: impl Into<String>, pattern: &str, label: impl Into<String>) -> Self {
         Self {
             name: name.into(),
-            regex: Regex::new(pattern).expect("Invalid regex pattern"),
+            regex: Regex::new(pattern).expect("Invalid built-in regex pattern"),
             redaction_label: label.into(),
         }
+    }
+
+    /// Create a pattern from user-provided input. Returns an error if the regex is invalid.
+    pub fn try_new(
+        name: impl Into<String>,
+        pattern: &str,
+        label: impl Into<String>,
+    ) -> std::result::Result<Self, regex::Error> {
+        Ok(Self {
+            name: name.into(),
+            regex: Regex::new(pattern)?,
+            redaction_label: label.into(),
+        })
     }
 }
 
@@ -131,8 +144,17 @@ impl DefaultSecurityProvider {
             ),
         ];
 
-        // Add custom patterns
-        patterns.extend(config.custom_patterns.clone());
+        // Add custom patterns (user-provided — log and skip invalid regexes)
+        for p in &config.custom_patterns {
+            match SensitivePattern::try_new(p.name.clone(), p.regex.as_str(), p.redaction_label.clone()) {
+                Ok(pattern) => patterns.push(pattern),
+                Err(e) => tracing::warn!(
+                    "Skipping invalid custom security pattern '{}': {}",
+                    p.name,
+                    e
+                ),
+            }
+        }
 
         patterns
     }

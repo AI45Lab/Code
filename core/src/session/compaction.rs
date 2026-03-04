@@ -62,14 +62,17 @@ pub(crate) async fn compact_messages(
     let summarize_start = KEEP_INITIAL_MESSAGES;
     let summarize_end = total.saturating_sub(KEEP_RECENT_MESSAGES);
 
-    // If there's nothing to summarize, just keep recent messages
+    // If there's nothing to summarize, keep initial + recent messages
     if summarize_end <= summarize_start {
         tracing::debug!(
-            "Not enough messages to summarize, keeping last {}",
+            "Not enough messages to summarize, keeping initial {} + last {}",
+            KEEP_INITIAL_MESSAGES,
             KEEP_RECENT_MESSAGES
         );
-        let recent = messages[total.saturating_sub(KEEP_RECENT_MESSAGES)..].to_vec();
-        return Ok(Some(recent));
+        let mut result = messages[..KEEP_INITIAL_MESSAGES.min(total)].to_vec();
+        let recent_start = total.saturating_sub(KEEP_RECENT_MESSAGES).max(KEEP_INITIAL_MESSAGES);
+        result.extend_from_slice(&messages[recent_start..]);
+        return Ok(Some(result));
     }
 
     let initial_messages = messages[..summarize_start].to_vec();

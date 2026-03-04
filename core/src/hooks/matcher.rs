@@ -210,6 +210,9 @@ impl HookMatcher {
     /// - `*.ext` matches any file ending with `.ext` (any depth)
     /// - `dir/**/*.ext` matches `.ext` files at any depth under dir
     fn glob_match(&self, pattern: &str, text: &str) -> bool {
+        // Normalize Windows backslashes to forward slashes for consistent matching
+        let text = text.replace('\\', "/");
+
         // Special handling: if pattern starts with * and has no /,
         // match file suffix. e.g., "*.rs" should match "src/main.rs"
         if pattern.starts_with('*') && !pattern.contains('/') {
@@ -229,7 +232,7 @@ impl HookMatcher {
         let regex_pattern = format!("^{}$", regex_pattern);
 
         if let Ok(re) = regex::Regex::new(&regex_pattern) {
-            re.is_match(text)
+            re.is_match(&text)
         } else {
             text == pattern
         }

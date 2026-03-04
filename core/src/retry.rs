@@ -73,9 +73,14 @@ impl RetryConfig {
         // Add jitter: ±25%
         let jitter_range = capped / 4;
         let jitter = if jitter_range > 0 {
-            // Simple deterministic jitter based on attempt number
-            // In production this uses the attempt to vary the delay
-            let jitter_offset = (attempt as u64 * 7 + 3) % (jitter_range * 2 + 1);
+            // Use system time nanos + attempt as entropy for non-deterministic jitter,
+            // so different clients/attempts spread their retries to avoid thundering herd.
+            let entropy = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos() as u64)
+                .unwrap_or(0);
+            let jitter_offset = (entropy ^ (attempt as u64).wrapping_mul(0x517cc1b727220a95))
+                % (jitter_range * 2 + 1);
             capped - jitter_range + jitter_offset
         } else {
             capped

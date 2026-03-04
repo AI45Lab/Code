@@ -67,20 +67,21 @@ impl Tool for LsTool {
 
         while let Ok(Some(entry)) = dir.next_entry().await {
             let name = entry.file_name().to_string_lossy().to_string();
+            let file_type = entry.file_type().await;
             let metadata = entry.metadata().await;
 
-            let (kind, size) = match metadata {
-                Ok(m) => {
-                    let kind = if m.is_dir() {
+            let (kind, size) = match (&file_type, &metadata) {
+                (Ok(ft), Ok(m)) => {
+                    let kind = if ft.is_dir() {
                         "dir"
-                    } else if m.is_symlink() {
+                    } else if ft.is_symlink() {
                         "link"
                     } else {
                         "file"
                     };
                     (kind, m.len())
                 }
-                Err(_) => ("unknown", 0),
+                _ => ("unknown", 0),
             };
 
             entries.push((name, kind, size));

@@ -19,7 +19,7 @@
 use crate::agent::{AgentConfig, AgentEvent, AgentLoop, AgentResult};
 use crate::commands::{CommandContext, CommandRegistry};
 use crate::config::CodeConfig;
-use crate::error::Result;
+use crate::error::{read_or_recover, write_or_recover, Result};
 use crate::llm::{LlmClient, Message};
 use crate::prompts::SystemPromptSlots;
 use crate::queue::{
@@ -35,6 +35,28 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
+
+/// Canonicalize a path, stripping the Windows `\\?\` UNC prefix to avoid
+/// polluting workspace strings throughout the system (prompts, session data, etc.).
+fn safe_canonicalize(path: &Path) -> PathBuf {
+    match std::fs::canonicalize(path) {
+        Ok(p) => strip_unc_prefix(p),
+        Err(_) => path.to_path_buf(),
+    }
+}
+
+/// Strip the Windows extended-length path prefix (`\\?\`) that `canonicalize()` adds.
+/// On non-Windows this is a no-op.
+fn strip_unc_prefix(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let s = path.to_string_lossy();
+        if let Some(stripped) = s.strip_prefix(r"\\?\") {
+            return PathBuf::from(stripped);
+        }
+    }
+    path
+}
 
 // ============================================================================
 // ToolCallResult
@@ -524,7 +546,7 @@ impl Agent {
         let expanded = if let Some(rest) = source.strip_prefix("~/") {
             let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
             if let Some(home) = home {
-                format!("{}/{}", home.to_string_lossy(), rest)
+                PathBuf::from(home).join(rest).display().to_string()
             } else {
                 source.clone()
             }
@@ -681,12 +703,13 @@ impl Agent {
                 let session_mgr = Arc::clone(session);
                 match tokio::runtime::Handle::try_current() {
                     Ok(handle) => {
+                        let global_for_merge = Arc::clone(&global);
                         tokio::task::block_in_place(|| {
                             handle.block_on(async move {
                                 for config in session_mgr.all_configs().await {
                                     let name = config.name.clone();
-                                    global.register_server(config).await;
-                                    if let Err(e) = global.connect(&name).await {
+                                    global_for_merge.register_server(config).await;
+                                    if let Err(e) = global_for_merge.connect(&name).await {
                                         tracing::warn!(
                                             server = %name,
                                             error = %e,
@@ -705,7 +728,7 @@ impl Agent {
                     }
                 }
                 SessionOptions {
-                    mcp_manager: Some(Arc::clone(self.global_mcp.as_ref().unwrap())),
+                    mcp_manager: Some(Arc::clone(&global)),
                     ..opts
                 }
             }
@@ -779,7 +802,7 @@ impl Agent {
         let session = self.build_session(data.config.workspace.clone(), llm_client, &opts)?;
 
         // Restore conversation history
-        *session.history.write().unwrap() = data.messages;
+        *write_or_recover(&session.history) = data.messages;
 
         Ok(session)
     }
@@ -790,8 +813,7 @@ impl Agent {
         llm_client: Arc<dyn LlmClient>,
         opts: &SessionOptions,
     ) -> Result<AgentSession> {
-        let canonical =
-            std::fs::canonicalize(&workspace).unwrap_or_else(|_| PathBuf::from(&workspace));
+        let canonical = safe_canonicalize(Path::new(&workspace));
 
         let tool_executor = Arc::new(ToolExecutor::new(canonical.display().to_string()));
 
@@ -1189,7 +1211,7 @@ impl AgentSession {
 
     /// Build a `CommandContext` from the current session state.
     fn build_command_context(&self) -> CommandContext {
-        let history = self.history.read().unwrap();
+        let history = read_or_recover(&self.history);
 
         // Collect tool names from config
         let tool_names: Vec<String> = self.config.tools.iter().map(|t| t.name.clone()).collect();
@@ -1246,7 +1268,7 @@ impl AgentSession {
                     text: output.text,
                     messages: history
                         .map(|h| h.to_vec())
-                        .unwrap_or_else(|| self.history.read().unwrap().clone()),
+                        .unwrap_or_else(|| read_or_recover(&self.history).clone()),
                     tool_calls_count: 0,
                     usage: crate::llm::TokenUsage::default(),
                 });
@@ -1261,7 +1283,7 @@ impl AgentSession {
         let use_internal = history.is_none();
         let effective_history = match history {
             Some(h) => h.to_vec(),
-            None => self.history.read().unwrap().clone(),
+            None => read_or_recover(&self.history).clone(),
         };
 
         let result = agent_loop.execute(&effective_history, prompt, None).await?;
@@ -1269,7 +1291,7 @@ impl AgentSession {
         // Auto-accumulate: only update internal history when no custom
         // history was provided.
         if use_internal {
-            *self.history.write().unwrap() = result.messages.clone();
+            *write_or_recover(&self.history) = result.messages.clone();
 
             // Auto-save if configured
             if self.auto_save {
@@ -1298,7 +1320,7 @@ impl AgentSession {
         let use_internal = history.is_none();
         let mut effective_history = match history {
             Some(h) => h.to_vec(),
-            None => self.history.read().unwrap().clone(),
+            None => read_or_recover(&self.history).clone(),
         };
         effective_history.push(Message::user_with_attachments(prompt, attachments));
 
@@ -1308,7 +1330,7 @@ impl AgentSession {
             .await?;
 
         if use_internal {
-            *self.history.write().unwrap() = result.messages.clone();
+            *write_or_recover(&self.history) = result.messages.clone();
             if self.auto_save {
                 if let Err(e) = self.save().await {
                     tracing::warn!("Auto-save failed for session {}: {}", self.session_id, e);
@@ -1332,7 +1354,7 @@ impl AgentSession {
         let (tx, rx) = mpsc::channel(256);
         let mut effective_history = match history {
             Some(h) => h.to_vec(),
-            None => self.history.read().unwrap().clone(),
+            None => read_or_recover(&self.history).clone(),
         };
         effective_history.push(Message::user_with_attachments(prompt, attachments));
 
@@ -1386,7 +1408,7 @@ impl AgentSession {
         let agent_loop = self.build_agent_loop();
         let effective_history = match history {
             Some(h) => h.to_vec(),
-            None => self.history.read().unwrap().clone(),
+            None => read_or_recover(&self.history).clone(),
         };
         let prompt = prompt.to_string();
 
@@ -1401,7 +1423,7 @@ impl AgentSession {
 
     /// Return a snapshot of the session's conversation history.
     pub fn history(&self) -> Vec<Message> {
-        self.history.read().unwrap().clone()
+        read_or_recover(&self.history).clone()
     }
 
     /// Return a reference to the session's memory, if configured.
@@ -1493,7 +1515,7 @@ impl AgentSession {
             None => return Ok(()),
         };
 
-        let history = self.history.read().unwrap().clone();
+        let history = read_or_recover(&self.history).clone();
         let now = chrono::Utc::now().timestamp();
 
         let data = crate::store::SessionData {

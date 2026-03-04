@@ -160,11 +160,12 @@ impl McpTransport for StdioTransport {
 
         // Create response channel
         let (tx, rx) = oneshot::channel();
+        let request_id = request.id;
 
         // Register pending request
         {
             let mut pending = self.pending.write().await;
-            pending.insert(request.id, tx);
+            pending.insert(request_id, tx);
         }
 
         // Serialize and send request
@@ -175,13 +176,27 @@ impl McpTransport for StdioTransport {
             .map_err(|_| anyhow!("Failed to send request"))?;
 
         // Wait for response with timeout
-        let response = tokio::time::timeout(
+        let response = match tokio::time::timeout(
             std::time::Duration::from_secs(self.request_timeout_secs),
             rx,
         )
         .await
-        .map_err(|_| anyhow!("MCP request timed out after {}s", self.request_timeout_secs))?
-        .map_err(|_| anyhow!("Response channel closed"))?;
+        {
+            Ok(Ok(resp)) => resp,
+            Ok(Err(_)) => {
+                // Channel closed — clean up pending entry
+                self.pending.write().await.remove(&request_id);
+                return Err(anyhow!("Response channel closed"));
+            }
+            Err(_) => {
+                // Timeout — clean up pending entry to prevent memory leak
+                self.pending.write().await.remove(&request_id);
+                return Err(anyhow!(
+                    "MCP request timed out after {}s",
+                    self.request_timeout_secs
+                ));
+            }
+        };
 
         Ok(response)
     }

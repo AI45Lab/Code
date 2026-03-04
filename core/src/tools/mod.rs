@@ -155,26 +155,45 @@ impl ToolExecutor {
                     ctx.workspace.join(path_str)
                 };
 
-                if let (Ok(canonical_target), Ok(canonical_workspace)) = (
-                    target.canonicalize().or_else(|_| {
-                        target
-                            .parent()
-                            .and_then(|p| p.canonicalize().ok())
-                            .ok_or_else(|| {
-                                std::io::Error::new(
-                                    std::io::ErrorKind::NotFound,
-                                    "parent not found",
-                                )
-                            })
-                    }),
-                    ctx.workspace.canonicalize(),
-                ) {
-                    if !canonical_target.starts_with(&canonical_workspace) {
+                // Canonicalize workspace first — fail closed if it can't be resolved
+                let canonical_workspace = ctx.workspace.canonicalize().map_err(|e| {
+                    anyhow::anyhow!(
+                        "Workspace boundary check failed: cannot canonicalize workspace '{}': {}",
+                        ctx.workspace.display(),
+                        e
+                    )
+                })?;
+
+                // Try to canonicalize target; fall back to parent directory for new files
+                let canonical_target = target.canonicalize().or_else(|_| {
+                    target
+                        .parent()
+                        .and_then(|p| p.canonicalize().ok())
+                        .ok_or_else(|| {
+                            std::io::Error::new(
+                                std::io::ErrorKind::NotFound,
+                                "parent not found",
+                            )
+                        })
+                });
+
+                match canonical_target {
+                    Ok(canonical) => {
+                        if !canonical.starts_with(&canonical_workspace) {
+                            anyhow::bail!(
+                                "Workspace boundary violation: tool '{}' path '{}' escapes workspace '{}'",
+                                name,
+                                path_str,
+                                ctx.workspace.display()
+                            );
+                        }
+                    }
+                    Err(_) => {
+                        // Fail closed: if we can't resolve the target path, deny the operation
                         anyhow::bail!(
-                            "Workspace boundary violation: tool '{}' path '{}' escapes workspace '{}'",
-                            name,
+                            "Workspace boundary check failed: cannot resolve path '{}' for tool '{}'",
                             path_str,
-                            ctx.workspace.display()
+                            name
                         );
                     }
                 }
