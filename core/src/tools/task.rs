@@ -42,6 +42,9 @@ pub struct TaskParams {
     /// Optional: maximum steps for this task
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_steps: Option<usize>,
+    /// Optional: allow all tool execution without confirmation (default: false)
+    #[serde(default)]
+    pub permissive: bool,
 }
 
 /// Task tool result
@@ -166,6 +169,12 @@ impl TaskExecutor {
             max_tool_rounds: params
                 .max_steps
                 .unwrap_or_else(|| agent.max_steps.unwrap_or(20)),
+            permission_checker: if params.permissive {
+                Some(Arc::new(crate::permissions::PermissionPolicy::permissive())
+                    as Arc<dyn crate::permissions::PermissionChecker>)
+            } else {
+                None
+            },
             ..AgentConfig::default()
         };
 
@@ -303,6 +312,11 @@ pub fn task_params_schema() -> serde_json::Value {
             "max_steps": {
                 "type": "integer",
                 "description": "Maximum steps for this task"
+            },
+            "permissive": {
+                "type": "boolean",
+                "description": "Allow all tool execution without confirmation (default: false)",
+                "default": false
             }
         },
         "required": ["agent", "description", "prompt"]
@@ -478,6 +492,7 @@ mod tests {
         assert_eq!(params.agent, "explore");
         assert_eq!(params.description, "Find auth code");
         assert!(!params.background);
+        assert!(!params.permissive);
     }
 
     #[test]
@@ -515,7 +530,8 @@ mod tests {
             "description": "Complex task",
             "prompt": "Do everything",
             "background": true,
-            "max_steps": 20
+            "max_steps": 20,
+            "permissive": true
         }"#;
 
         let params: TaskParams = serde_json::from_str(json).unwrap();
@@ -524,6 +540,7 @@ mod tests {
         assert_eq!(params.prompt, "Do everything");
         assert!(params.background);
         assert_eq!(params.max_steps, Some(20));
+        assert!(params.permissive);
     }
 
     #[test]
@@ -545,6 +562,7 @@ mod tests {
             prompt: "Test prompt".to_string(),
             background: false,
             max_steps: Some(5),
+            permissive: false,
         };
 
         let json = serde_json::to_string(&params).unwrap();
@@ -561,6 +579,7 @@ mod tests {
             prompt: "Prompt".to_string(),
             background: true,
             max_steps: None,
+            permissive: false,
         };
 
         let cloned = params.clone();
@@ -667,6 +686,7 @@ mod tests {
             prompt: "Test prompt".to_string(),
             background: false,
             max_steps: None,
+            permissive: false,
         };
         assert!(!params.background);
     }
@@ -679,6 +699,7 @@ mod tests {
             prompt: "Test prompt".to_string(),
             background: false,
             max_steps: None,
+            permissive: false,
         };
         let json = serde_json::to_string(&params).unwrap();
         // max_steps should not appear when None
@@ -693,6 +714,7 @@ mod tests {
             prompt: "Test prompt".to_string(),
             background: false,
             max_steps: Some(15),
+            permissive: false,
         };
         let json = serde_json::to_string(&params).unwrap();
         assert!(json.contains("max_steps"));
@@ -731,6 +753,7 @@ mod tests {
             prompt: "".to_string(),
             background: false,
             max_steps: None,
+            permissive: false,
         };
         let json = serde_json::to_string(&params).unwrap();
         let deserialized: TaskParams = serde_json::from_str(&json).unwrap();
@@ -759,6 +782,7 @@ mod tests {
             prompt: "Test prompt".to_string(),
             background: false,
             max_steps: None,
+            permissive: false,
         };
         let debug_str = format!("{:?}", params);
         assert!(debug_str.contains("explore"));
@@ -787,6 +811,7 @@ mod tests {
             prompt: "Test roundtrip serialization".to_string(),
             background: true,
             max_steps: Some(42),
+            permissive: true,
         };
         let json = serde_json::to_string(&original).unwrap();
         let deserialized: TaskParams = serde_json::from_str(&json).unwrap();
@@ -795,6 +820,7 @@ mod tests {
         assert_eq!(original.prompt, deserialized.prompt);
         assert_eq!(original.background, deserialized.background);
         assert_eq!(original.max_steps, deserialized.max_steps);
+        assert_eq!(original.permissive, deserialized.permissive);
     }
 
     #[test]
@@ -866,6 +892,7 @@ mod tests {
                     prompt: "Prompt 1".to_string(),
                     background: false,
                     max_steps: None,
+                    permissive: false,
                 },
                 TaskParams {
                     agent: "general".to_string(),
@@ -873,6 +900,7 @@ mod tests {
                     prompt: "Prompt 2".to_string(),
                     background: false,
                     max_steps: Some(10),
+                    permissive: false,
                 },
             ],
         };
@@ -893,6 +921,7 @@ mod tests {
                     prompt: "Find files".to_string(),
                     background: false,
                     max_steps: None,
+                    permissive: false,
                 },
                 TaskParams {
                     agent: "plan".to_string(),
@@ -900,6 +929,7 @@ mod tests {
                     prompt: "Make plan".to_string(),
                     background: false,
                     max_steps: Some(5),
+                    permissive: false,
                 },
             ],
         };
@@ -920,6 +950,7 @@ mod tests {
                 prompt: "Prompt".to_string(),
                 background: false,
                 max_steps: None,
+                permissive: false,
             }],
         };
         let cloned = params.clone();
@@ -963,6 +994,7 @@ mod tests {
                 prompt: "Test".to_string(),
                 background: false,
                 max_steps: None,
+                permissive: false,
             }],
         };
         let debug_str = format!("{:?}", params);
@@ -980,6 +1012,7 @@ mod tests {
                 prompt: format!("Prompt for task {}", i),
                 background: false,
                 max_steps: Some(10),
+                permissive: false,
             })
             .collect();
 
@@ -1000,6 +1033,7 @@ mod tests {
             prompt: "Zero steps".to_string(),
             background: false,
             max_steps: Some(0),
+            permissive: false,
         };
         let json = serde_json::to_string(&params).unwrap();
         let deserialized: TaskParams = serde_json::from_str(&json).unwrap();
@@ -1015,11 +1049,48 @@ mod tests {
                 prompt: "Run in background".to_string(),
                 background: true,
                 max_steps: None,
+                permissive: false,
             })
             .collect();
         let params = ParallelTaskParams { tasks };
         for task in &params.tasks {
             assert!(task.background);
         }
+    }
+
+    #[test]
+    fn test_task_params_permissive_true() {
+        let json = r#"{
+            "agent": "general",
+            "description": "Permissive task",
+            "prompt": "Run without confirmation",
+            "permissive": true
+        }"#;
+
+        let params: TaskParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.agent, "general");
+        assert!(params.permissive);
+    }
+
+    #[test]
+    fn test_task_params_permissive_default() {
+        let json = r#"{
+            "agent": "general",
+            "description": "Default task",
+            "prompt": "Run with default settings"
+        }"#;
+
+        let params: TaskParams = serde_json::from_str(json).unwrap();
+        assert!(!params.permissive); // Should default to false
+    }
+
+    #[test]
+    fn test_task_params_schema_permissive_field() {
+        let schema = task_params_schema();
+        let props = &schema["properties"];
+
+        assert_eq!(props["permissive"]["type"], "boolean");
+        assert_eq!(props["permissive"]["default"], false);
+        assert!(props["permissive"]["description"].is_string());
     }
 }
