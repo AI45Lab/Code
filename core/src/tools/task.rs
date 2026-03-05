@@ -188,7 +188,24 @@ impl TaskExecutor {
             child_config,
         );
 
-        let (output, success) = match agent_loop.execute(&[], &params.prompt, None).await {
+        // Create an mpsc channel for the child agent and forward events to broadcast
+        let child_event_tx = if let Some(ref broadcast_tx) = event_tx {
+            let (mpsc_tx, mut mpsc_rx) = tokio::sync::mpsc::channel(100);
+            let broadcast_tx_clone = broadcast_tx.clone();
+
+            // Spawn a task to forward events from mpsc to broadcast
+            tokio::spawn(async move {
+                while let Some(event) = mpsc_rx.recv().await {
+                    let _ = broadcast_tx_clone.send(event);
+                }
+            });
+
+            Some(mpsc_tx)
+        } else {
+            None
+        };
+
+        let (output, success) = match agent_loop.execute(&[], &params.prompt, child_event_tx).await {
             Ok(result) => (result.text, true),
             Err(e) => (format!("Task failed: {}", e), false),
         };

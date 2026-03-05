@@ -242,6 +242,43 @@ impl From<RustAgentEvent> for PyAgentEvent {
                 error: Some(message),
                 ..Self::empty("error")
             },
+            RustAgentEvent::SubagentStart {
+                task_id,
+                session_id,
+                parent_session_id: _,
+                agent,
+                description,
+            } => Self {
+                tool_id: Some(task_id),
+                tool_name: Some(agent),
+                text: Some(session_id),
+                prompt: Some(description),
+                ..Self::empty("subagent_start")
+            },
+            RustAgentEvent::SubagentEnd {
+                task_id,
+                session_id,
+                agent,
+                output,
+                success,
+            } => Self {
+                tool_id: Some(task_id),
+                tool_name: Some(agent),
+                text: Some(session_id),
+                tool_output: Some(output),
+                exit_code: Some(if success { 0 } else { 1 }),
+                ..Self::empty("subagent_end")
+            },
+            RustAgentEvent::ToolInputDelta { delta } => Self {
+                text: Some(delta),
+                ..Self::empty("tool_input_delta")
+            },
+            RustAgentEvent::SubagentProgress { task_id, session_id, status, metadata: _ } => Self {
+                tool_id: Some(task_id),
+                text: Some(format!("{}: {}", session_id, status)),
+                ..Self::empty("subagent_progress")
+            },
+            // Catch-all for other event types (HITL, permissions, context, memory, planning, etc.)
             _ => Self::empty("unknown"),
         }
     }
