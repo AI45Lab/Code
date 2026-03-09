@@ -22,6 +22,9 @@ pub struct SubAgentHandle {
     /// 控制信号发送器
     control_tx: tokio::sync::mpsc::Sender<ControlSignal>,
 
+    /// 事件广播发送器
+    event_tx: tokio::sync::broadcast::Sender<OrchestratorEvent>,
+
     /// 状态
     state: Arc<RwLock<SubAgentState>>,
 
@@ -39,6 +42,7 @@ impl SubAgentHandle {
         id: String,
         config: SubAgentConfig,
         control_tx: tokio::sync::mpsc::Sender<ControlSignal>,
+        event_tx: tokio::sync::broadcast::Sender<OrchestratorEvent>,
         state: Arc<RwLock<SubAgentState>>,
         activity: Arc<RwLock<SubAgentActivity>>,
         task_handle: tokio::task::JoinHandle<Result<String>>,
@@ -51,6 +55,7 @@ impl SubAgentHandle {
                 .unwrap()
                 .as_millis() as u64,
             control_tx,
+            event_tx,
             state,
             activity,
             task_handle: Arc::new(task_handle),
@@ -168,6 +173,17 @@ impl SubAgentHandle {
     /// 是否已暂停
     pub fn is_paused(&self) -> bool {
         self.state().is_paused()
+    }
+
+    /// Subscribe to events for this SubAgent.
+    ///
+    /// Returns a filtered event stream that only includes events for this SubAgent.
+    pub fn events(&self) -> crate::orchestrator::SubAgentEventStream {
+        let rx = self.event_tx.subscribe();
+        crate::orchestrator::SubAgentEventStream {
+            rx,
+            filter_id: self.id.clone(),
+        }
     }
 }
 

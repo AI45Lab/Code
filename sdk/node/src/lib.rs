@@ -2920,6 +2920,8 @@ pub struct SubAgentConfig {
     pub prompt: String,
     /// Enable permissive mode (bypass HITL)
     pub permissive: bool,
+    /// Deny rules to enforce even in permissive mode (e.g., ["mcp__longvt__*"])
+    pub permissive_deny: Option<Vec<String>>,
     /// Maximum execution steps
     pub max_steps: Option<u32>,
     /// Execution timeout (milliseconds)
@@ -2942,6 +2944,9 @@ impl From<SubAgentConfig> for RustSubAgentConfig {
             config = config.with_description(c.description);
         }
         config = config.with_permissive(c.permissive);
+        if let Some(deny) = c.permissive_deny {
+            config = config.with_permissive_deny(deny);
+        }
         if let Some(steps) = c.max_steps {
             config = config.with_max_steps(steps as usize);
         }
@@ -2981,6 +2986,8 @@ pub struct AgentSlot {
     pub prompt: String,
     /// Enable permissive mode (bypass HITL)
     pub permissive: bool,
+    /// Deny rules to enforce even in permissive mode (e.g., ["mcp__longvt__*"])
+    pub permissive_deny: Option<Vec<String>>,
     /// Maximum execution steps
     pub max_steps: Option<u32>,
     /// Execution timeout (milliseconds)
@@ -3011,6 +3018,9 @@ impl From<AgentSlot> for RustAgentSlot {
             slot = slot.with_description(s.description);
         }
         slot = slot.with_permissive(s.permissive);
+        if let Some(deny) = s.permissive_deny {
+            slot = slot.with_permissive_deny(deny);
+        }
         if let Some(steps) = s.max_steps {
             slot = slot.with_max_steps(steps as usize);
         }

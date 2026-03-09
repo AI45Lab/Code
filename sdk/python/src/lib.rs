@@ -3726,12 +3726,13 @@ struct PySubAgentConfig {
 #[pymethods]
 impl PySubAgentConfig {
     #[new]
-    #[pyo3(signature = (agent_type, prompt, description=None, permissive=false, max_steps=None, timeout_ms=None, parent_id=None, workspace=None, agent_dirs=None, lane_config=None))]
+    #[pyo3(signature = (agent_type, prompt, description=None, permissive=false, permissive_deny=None, max_steps=None, timeout_ms=None, parent_id=None, workspace=None, agent_dirs=None, lane_config=None))]
     fn new(
         agent_type: String,
         prompt: String,
         description: Option<String>,
         permissive: bool,
+        permissive_deny: Option<Vec<String>>,
         max_steps: Option<usize>,
         timeout_ms: Option<u64>,
         parent_id: Option<String>,
@@ -3744,6 +3745,9 @@ impl PySubAgentConfig {
             config = config.with_description(desc);
         }
         config = config.with_permissive(permissive);
+        if let Some(deny) = permissive_deny {
+            config = config.with_permissive_deny(deny);
+        }
         if let Some(steps) = max_steps {
             config = config.with_max_steps(steps);
         }
@@ -3786,7 +3790,7 @@ struct PyAgentSlot {
 #[pymethods]
 impl PyAgentSlot {
     #[new]
-    #[pyo3(signature = (agent_type, prompt, role=None, description=None, permissive=false, max_steps=None, timeout_ms=None, parent_id=None, workspace=None, agent_dirs=None, lane_config=None))]
+    #[pyo3(signature = (agent_type, prompt, role=None, description=None, permissive=false, permissive_deny=None, max_steps=None, timeout_ms=None, parent_id=None, workspace=None, agent_dirs=None, lane_config=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         agent_type: String,
@@ -3794,6 +3798,7 @@ impl PyAgentSlot {
         role: Option<String>,
         description: Option<String>,
         permissive: bool,
+        permissive_deny: Option<Vec<String>>,
         max_steps: Option<usize>,
         timeout_ms: Option<u64>,
         parent_id: Option<String>,
@@ -3815,6 +3820,9 @@ impl PyAgentSlot {
             slot = slot.with_description(desc);
         }
         slot = slot.with_permissive(permissive);
+        if let Some(deny) = permissive_deny {
+            slot = slot.with_permissive_deny(deny);
+        }
         if let Some(steps) = max_steps {
             slot = slot.with_max_steps(steps);
         }

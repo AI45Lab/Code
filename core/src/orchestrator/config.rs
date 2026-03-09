@@ -45,6 +45,10 @@ pub struct SubAgentConfig {
     #[serde(default)]
     pub permissive: bool,
 
+    /// Deny rules to enforce even in permissive mode (e.g., ["mcp__longvt__*"])
+    #[serde(default)]
+    pub permissive_deny: Vec<String>,
+
     /// 最大执行步数
     pub max_steps: Option<usize>,
 
@@ -132,6 +136,7 @@ impl SubAgentConfig {
             description: String::new(),
             prompt: prompt.into(),
             permissive: false,
+            permissive_deny: Vec::new(),
             max_steps: None,
             timeout_ms: None,
             parent_id: None,
@@ -151,6 +156,12 @@ impl SubAgentConfig {
     /// 设置宽松模式
     pub fn with_permissive(mut self, permissive: bool) -> Self {
         self.permissive = permissive;
+        self
+    }
+
+    /// Set deny rules to enforce even in permissive mode
+    pub fn with_permissive_deny(mut self, deny_rules: Vec<String>) -> Self {
+        self.permissive_deny = deny_rules;
         self
     }
 
@@ -226,6 +237,10 @@ pub struct AgentSlot {
     #[serde(default)]
     pub permissive: bool,
 
+    /// Deny rules to enforce even in permissive mode
+    #[serde(default)]
+    pub permissive_deny: Vec<String>,
+
     /// Maximum execution steps
     pub max_steps: Option<usize>,
 
@@ -262,6 +277,7 @@ impl AgentSlot {
             description: String::new(),
             prompt: prompt.into(),
             permissive: false,
+            permissive_deny: Vec::new(),
             max_steps: None,
             timeout_ms: None,
             parent_id: None,
@@ -287,6 +303,12 @@ impl AgentSlot {
     /// Set permissive mode (bypass HITL).
     pub fn with_permissive(mut self, permissive: bool) -> Self {
         self.permissive = permissive;
+        self
+    }
+
+    /// Set deny rules to enforce even in permissive mode.
+    pub fn with_permissive_deny(mut self, deny_rules: Vec<String>) -> Self {
+        self.permissive_deny = deny_rules;
         self
     }
 
@@ -341,6 +363,7 @@ impl From<SubAgentConfig> for AgentSlot {
             description: c.description,
             prompt: c.prompt,
             permissive: c.permissive,
+            permissive_deny: c.permissive_deny,
             max_steps: c.max_steps,
             timeout_ms: c.timeout_ms,
             parent_id: c.parent_id,
@@ -359,6 +382,7 @@ impl From<AgentSlot> for SubAgentConfig {
             description: s.description,
             prompt: s.prompt,
             permissive: s.permissive,
+            permissive_deny: s.permissive_deny,
             max_steps: s.max_steps,
             timeout_ms: s.timeout_ms,
             parent_id: s.parent_id,

@@ -169,6 +169,7 @@ impl AgentOrchestrator {
             id.clone(),
             config,
             control_tx,
+            self.event_tx.clone(),
             state.clone(),
             activity.clone(),
             task_handle,

@@ -115,9 +115,27 @@ impl SubAgentWrapper {
 
         // Build session options from SubAgentConfig fields.
         let mut opts = crate::SessionOptions::new();
+
+        // Handle permissive mode with fine-grained deny control
         if self.config.permissive {
-            opts = opts.with_permissive_policy();
+            // Build a permissive policy that still respects deny rules
+            let mut policy = crate::permissions::PermissionPolicy::permissive();
+
+            // Add deny rules from permissive_deny config
+            for rule in &self.config.permissive_deny {
+                policy = policy.deny(rule);
+            }
+
+            // If we have an agent definition, also add its deny rules
+            if let Some(def) = registry.get(&self.config.agent_type) {
+                for rule in &def.permissions.deny {
+                    policy = policy.deny(&rule.rule);
+                }
+            }
+
+            opts = opts.with_permission_checker(Arc::new(policy));
         }
+
         if let Some(steps) = self.config.max_steps {
             opts = opts.with_max_tool_rounds(steps);
         }
@@ -175,9 +193,16 @@ impl SubAgentWrapper {
 
             // Consume the next agent event.
             match rx.recv().await {
-                Some(AgentEvent::TurnStart { .. }) => {
+                Some(AgentEvent::TurnStart { turn }) => {
                     *self.activity.write().await =
                         SubAgentActivity::RequestingLlm { message_count: 0 };
+                    // Forward as internal event for observability
+                    let _ = self
+                        .event_tx
+                        .send(OrchestratorEvent::SubAgentInternalEvent {
+                            id: self.id.clone(),
+                            event: AgentEvent::TurnStart { turn },
+                        });
                 }
                 Some(AgentEvent::ToolStart { id, name }) => {
                     *self.activity.write().await = SubAgentActivity::CallingTool {
@@ -220,6 +245,13 @@ impl SubAgentWrapper {
                 }
                 Some(AgentEvent::TextDelta { text }) => {
                     output.push_str(&text);
+                    // Forward as internal event for streaming observability
+                    let _ = self
+                        .event_tx
+                        .send(OrchestratorEvent::SubAgentInternalEvent {
+                            id: self.id.clone(),
+                            event: AgentEvent::TextDelta { text },
+                        });
                 }
                 Some(AgentEvent::ExternalTaskPending {
                     task_id,
