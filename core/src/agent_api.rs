@@ -666,13 +666,11 @@ impl Agent {
         } else if source.trim().starts_with('{') {
             return Err(CodeError::Config(
                 "JSON config is not supported; use ACL-compatible .acl/.hcl config".into(),
-            )
-            .into());
+            ));
         } else if matches!(path.extension().and_then(|ext| ext.to_str()), Some("json")) {
             return Err(CodeError::Config(
                 "JSON config files are not supported; use .acl or legacy .hcl".into(),
-            )
-            .into());
+            ));
         } else {
             CodeConfig::from_acl(&source).context("Failed to parse config as ACL string")?
         };

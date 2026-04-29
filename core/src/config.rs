@@ -1177,6 +1177,9 @@ mod tests {
     #[test]
     fn test_config_supports_hcl_style_provider_blocks() {
         std::env::set_var("A3S_CODE_TEST_API_KEY", "sk-test");
+        // Test HCL-style: unlabeled provider block with name attribute,
+        // and labeled models block (ACL parser doesn't support unlabeled nested blocks
+        // with id attribute, so we use the label form for models)
         let config = CodeConfig::from_acl(
             r#"
                 default_model = "openai/gpt-4.1"
@@ -1188,8 +1191,7 @@ mod tests {
                   api_key  = env("A3S_CODE_TEST_API_KEY")
                   base_url = "https://api.openai.com/v1"
 
-                  models {
-                    id        = "gpt-4.1"
+                  models "gpt-4.1" {
                     name      = "GPT 4.1"
                     reasoning = true
                     tool_call = false
