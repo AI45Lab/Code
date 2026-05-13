@@ -27,7 +27,7 @@ fn apply_permissions(opts: &mut SessionOptions, def: &AgentDefinition) {
 }
 
 fn has_defined_permissions(def: &AgentDefinition) -> bool {
-    !def.permissions.allow.is_empty() || !def.permissions.deny.is_empty()
+    !def.permissions.is_default_policy()
 }
 
 fn apply_step_budget(opts: &mut SessionOptions, def: &AgentDefinition) {
@@ -128,5 +128,26 @@ mod tests {
         let opts = apply_agent_definition(SessionOptions::new(), &def);
 
         assert_eq!(opts.model.as_deref(), Some("anthropic/claude-opus"));
+    }
+
+    #[test]
+    fn applies_default_allow_agent_permissions() {
+        use crate::permissions::PermissionDecision;
+
+        let permissions = PermissionPolicy {
+            default_decision: PermissionDecision::Allow,
+            ..PermissionPolicy::new()
+        };
+        let def = AgentDefinition::new("worker", "Allowed worker").with_permissions(permissions);
+
+        let opts = apply_agent_definition(SessionOptions::new(), &def);
+
+        let checker = opts
+            .permission_checker
+            .expect("non-default permission policy should be applied");
+        assert_eq!(
+            checker.check("bash", &serde_json::json!({"command": "echo ok"})),
+            PermissionDecision::Allow
+        );
     }
 }

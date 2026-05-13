@@ -9,7 +9,7 @@ use super::{MatchingRules, PermissionChecker, PermissionDecision, PermissionRule
 /// 2. Allow rules - any match results in auto-approval
 /// 3. Ask rules - any match requires user confirmation
 /// 4. Default - falls back to default_decision
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PermissionPolicy {
     /// Rules that always deny (checked first)
     #[serde(default)]
@@ -56,6 +56,11 @@ impl PermissionPolicy {
     /// Create a new permission policy
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Return true when this policy is still the implicit default Ask policy.
+    pub fn is_default_policy(&self) -> bool {
+        self == &Self::default()
     }
 
     /// Create a strict policy that asks for everything

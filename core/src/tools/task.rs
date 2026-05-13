@@ -15,9 +15,10 @@
 //! ```
 
 use crate::agent::{AgentConfig, AgentEvent, AgentLoop};
-use crate::llm::LlmClient;
+use crate::llm::{LlmClient, ToolDefinition};
 use crate::mcp::manager::McpManager;
-use crate::subagent::AgentRegistry;
+use crate::permissions::PermissionChecker;
+use crate::subagent::{AgentDefinition, AgentRegistry};
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -128,6 +129,39 @@ fn format_task_result_for_context(result: &TaskResult) -> (String, bool) {
     (formatted, truncated)
 }
 
+fn has_defined_permissions(agent: &AgentDefinition) -> bool {
+    !agent.permissions.is_default_policy()
+}
+
+fn agent_permission_checker(agent: &AgentDefinition) -> Option<Arc<dyn PermissionChecker>> {
+    if has_defined_permissions(agent) {
+        Some(Arc::new(agent.permissions.clone()) as Arc<dyn PermissionChecker>)
+    } else {
+        None
+    }
+}
+
+fn build_child_config(
+    agent: &AgentDefinition,
+    params: &TaskParams,
+    tools: Vec<ToolDefinition>,
+) -> AgentConfig {
+    let mut prompt_slots = crate::prompts::SystemPromptSlots::default();
+    if let Some(ref p) = agent.prompt {
+        prompt_slots.extra = Some(p.clone());
+    }
+
+    AgentConfig {
+        prompt_slots,
+        tools,
+        max_tool_rounds: params
+            .max_steps
+            .unwrap_or_else(|| agent.max_steps.unwrap_or(20)),
+        permission_checker: agent_permission_checker(agent),
+        ..AgentConfig::default()
+    }
+}
+
 /// Task executor for delegated child runs.
 pub struct TaskExecutor {
     /// Agent registry for looking up agent definitions
@@ -217,26 +251,13 @@ impl TaskExecutor {
             }
         }
 
-        if !agent.permissions.allow.is_empty() || !agent.permissions.deny.is_empty() {
+        if has_defined_permissions(&agent) {
             child_executor.set_guard_policy(Arc::new(agent.permissions.clone())
                 as Arc<dyn crate::permissions::PermissionChecker>);
         }
         let child_executor = Arc::new(child_executor);
 
-        // Inject the agent system prompt via the extra slot.
-        let mut prompt_slots = crate::prompts::SystemPromptSlots::default();
-        if let Some(ref p) = agent.prompt {
-            prompt_slots.extra = Some(p.clone());
-        }
-
-        let child_config = AgentConfig {
-            prompt_slots,
-            tools: child_executor.definitions(),
-            max_tool_rounds: params
-                .max_steps
-                .unwrap_or_else(|| agent.max_steps.unwrap_or(20)),
-            ..AgentConfig::default()
-        };
+        let child_config = build_child_config(&agent, &params, child_executor.definitions());
 
         let tool_context =
             ToolContext::new(PathBuf::from(&self.workspace)).with_session_id(session_id.clone());
@@ -1255,5 +1276,58 @@ mod tests {
         let props = &schema["properties"];
 
         assert!(props.get("permissive").is_none());
+    }
+
+    #[test]
+    fn test_child_config_inherits_agent_permissions() {
+        use crate::permissions::{PermissionDecision, PermissionPolicy};
+
+        let agent = AgentDefinition::new("worker", "Worker")
+            .with_permissions(PermissionPolicy::new().allow("bash(echo:*)"));
+        let params = TaskParams {
+            agent: "worker".to_string(),
+            description: "Run allowed command".to_string(),
+            prompt: "Use bash".to_string(),
+            background: false,
+            max_steps: None,
+        };
+
+        let config = build_child_config(&agent, &params, Vec::new());
+
+        let checker = config
+            .permission_checker
+            .expect("agent permission policy should be installed");
+        assert_eq!(
+            checker.check("bash", &serde_json::json!({"command": "echo ok"})),
+            PermissionDecision::Allow
+        );
+    }
+
+    #[test]
+    fn test_child_config_inherits_default_allow_permissions() {
+        use crate::permissions::{PermissionDecision, PermissionPolicy};
+
+        let permissions = PermissionPolicy {
+            default_decision: PermissionDecision::Allow,
+            ..PermissionPolicy::new()
+        };
+        let agent = AgentDefinition::new("worker", "Worker").with_permissions(permissions);
+        let params = TaskParams {
+            agent: "worker".to_string(),
+            description: "Run any command".to_string(),
+            prompt: "Use bash".to_string(),
+            background: false,
+            max_steps: None,
+        };
+
+        let config = build_child_config(&agent, &params, Vec::new());
+
+        let checker = config
+            .permission_checker
+            .expect("non-default permission policy should be installed");
+        assert_eq!(
+            checker.check("bash", &serde_json::json!({"command": "echo ok"})),
+            PermissionDecision::Allow
+        );
     }
 }
