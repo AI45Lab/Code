@@ -7,6 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added `S3WorkspaceBackend` — an S3-compatible workspace backend that lets
+  built-in file tools (`read`, `write`, `edit`, `patch`, `ls`) operate
+  directly against any S3-compatible endpoint (AWS S3, MinIO, RustFS, R2,
+  Backblaze B2, ...). Gated behind the new `s3` Cargo feature.
+- Added `S3BackendConfig` builder for configuring endpoint, region, static
+  or session-token credentials, force-path-style, request timeout, and
+  bucket prefix.
+- Added `WorkspaceServices::s3()` factory and `WorkspaceServices::from_s3_backend()`
+  helper. The factory installs a 60s default per-operation timeout and
+  declines `bash`, `git`, `grep`, and `glob` capabilities — capability
+  gating automatically hides those tools from the model so it cannot
+  call operations the backend cannot service.
+- Exposed `S3WorkspaceBackend` in the Node and Python SDKs alongside
+  `LocalWorkspaceBackend`. Configuration uses the same option surface
+  (`workspaceBackend` / `workspace_backend`).
+
+### Changed
+
+- Restructured `core/src/workspace.rs` into a `workspace/` module with
+  `workspace/mod.rs` (abstract traits + `WorkspaceServices`),
+  `workspace/local.rs` (`LocalWorkspaceBackend`), and `workspace/s3.rs`
+  (`S3WorkspaceBackend`). No behavioural change for existing callers.
+
+## [2.6.0] - 2026-05-18
+
+### Added
+
+- Added `WorkspaceServices` capability abstraction (`core/src/workspace.rs`)
+  that lets the host supply file system, command runner, search, and Git
+  providers behind the stable built-in tool contract. The default
+  `LocalWorkspaceBackend` preserves existing local-filesystem behavior, while
+  DFS, browser, container, and remote backends can be assembled via
+  `WorkspaceServicesBuilder`.
+- Added `SessionOptions::with_workspace_backend()` (alias
+  `with_workspace_services`) so callers can opt-in to non-local workspaces
+  without changing tool schemas.
+- Added capability-driven tool gating: `bash`, `grep`, `glob`, and `git` are
+  only registered when the workspace backend declares the matching capability,
+  preventing models from invoking tools the backend cannot service.
+- Added `Session::write_file`, `Session::ls`, `Session::edit_file`, and
+  `Session::patch_file` direct-tool APIs in core, Node, and Python SDKs,
+  alongside the existing `read_file` / `bash` / `glob` / `grep`.
+- Added `LocalWorkspaceBackend` class to the Node and Python SDKs as the
+  explicit typed form of the default backend and the option surface for future
+  remote/browser/DFS workspaces.
+- Added `workspace_services` to `ChildRunContext` so child runs inherit the
+  parent's workspace backend.
+- Added 17 unit + integration tests covering virtual path resolution, capability
+  downgrade, contract-level tool routing for files / search / bash / git
+  through pluggable backends, and session-level direct-tool dispatch.
+
+### Changed
+
+- Refactored built-in tools `read`, `write`, `edit`, `patch`, `ls`, `bash`,
+  `grep`, `glob`, and `git` to route operations through `WorkspaceServices`
+  instead of hard-coded local filesystem calls. Local behavior is unchanged.
+- Centralized workspace-boundary path checks in
+  `ToolContext::resolve_workspace_path`, removing duplicated canonicalization
+  logic from `ToolExecutor::execute`.
+
+### Fixed
+
+- Removed two `clippy::useless_conversion` warnings in
+  `core/tests/test_ahp_idle_with_llm.rs` so `cargo clippy --all-targets` is
+  clean.
+
+### Documentation
+
+- Updated `README.md`, Node SDK README, and Python SDK README with workspace
+  backend usage and the new direct-tool API surface.
+
 ## [2.5.0] - 2026-05-12
 
 ### Added
