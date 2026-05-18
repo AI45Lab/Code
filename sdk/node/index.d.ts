@@ -177,6 +177,42 @@ export interface JsSessionStore {
 export interface JsSecurityProvider {
   kind: string
 }
+export interface JsWorkspaceBackend {
+  kind: string
+  root?: string
+  s3?: JsS3BackendConfig
+}
+/**
+ * Configuration for an S3-compatible workspace backend.
+ *
+ * Use this with [`S3WorkspaceBackend`] to point a session's built-in file
+ * tools at any S3-compatible endpoint (AWS S3, MinIO, RustFS, R2, etc.).
+ * `endpoint` is optional — omit it to use the AWS default. `prefix` is
+ * the logical workspace root inside the bucket; every workspace path
+ * becomes `<prefix>/<path>` when sent to S3.
+ */
+export interface JsS3BackendConfig {
+  /**
+   * Optional S3 endpoint URL. Omit for AWS S3 (the SDK will compute it
+   * from `region`). Set to `https://...` for MinIO / RustFS / R2 / etc.
+   */
+  endpoint?: string
+  /** AWS region. Defaults to `us-east-1` when omitted. */
+  region?: string
+  /** Static access key. Use `sessionToken` together when STS-issued. */
+  accessKeyId: string
+  secretAccessKey: string
+  sessionToken?: string
+  /** Bucket name. */
+  bucket: string
+  /**
+   * Logical workspace prefix inside the bucket (without leading/trailing
+   * slashes). Use `""` to make the bucket root the workspace.
+   */
+  prefix: string
+  /** `true` for MinIO / RustFS / most non-AWS endpoints; `false` for AWS S3. */
+  forcePathStyle?: boolean
+}
 /**
  * Union type for AHP transport configuration.
  * Accepts any of: StdioTransport, HttpTransport, WebSocketTransport, UnixSocketTransport.
@@ -339,6 +375,17 @@ export interface SessionOptions {
    * ```
    */
   securityProvider?: JsSecurityProvider
+  /**
+   * Workspace backend used by built-in tools.
+   *
+   * Pass `new LocalWorkspaceBackend("/repo")` to explicitly use the local
+   * filesystem backend. This option is the SDK surface for future remote,
+   * browser, DFS, and container-backed workspace implementations.
+   * ```js
+   * agent.session('/repo', { workspaceBackend: new LocalWorkspaceBackend('/repo') });
+   * ```
+   */
+  workspaceBackend?: JsWorkspaceBackend
   /**
    * Custom role/identity prepended before the core agentic prompt.
    * Example: "You are a senior Python developer specializing in FastAPI."
@@ -699,6 +746,52 @@ export declare class DefaultSecurityProvider {
   constructor()
 }
 /**
+ * Local filesystem workspace backend.
+ *
+ * This is the explicit typed form of the default local workspace behavior.
+ * It is useful when callers want to pass workspace backends through the same
+ * option surface that remote/browser backends will use.
+ *
+ * ```js
+ * agent.session('/repo', { workspaceBackend: new LocalWorkspaceBackend('/repo') });
+ * ```
+ */
+export declare class LocalWorkspaceBackend {
+  kind: string
+  root: string
+  /** Create a local filesystem workspace backend rooted at `root`. */
+  constructor(root: string)
+}
+/**
+ * S3-compatible object-storage workspace backend.
+ *
+ * Points built-in file tools (`read`, `write`, `edit`, `patch`, `ls`) at an
+ * S3-compatible bucket. Works with AWS S3, MinIO, RustFS, Cloudflare R2,
+ * Backblaze B2, and other S3-API-compatible services.
+ *
+ * `bash`, `git`, `grep`, and `glob` are intentionally **not** registered
+ * when this backend is in use — object storage cannot service them.
+ *
+ * ```js
+ * const backend = new S3WorkspaceBackend({
+ *   endpoint: 'https://minio.local:9000',
+ *   region: 'us-east-1',
+ *   accessKeyId: 'AKIA...',
+ *   secretAccessKey: '...',
+ *   bucket: 'workspace',
+ *   prefix: 'users/u1/sessions/s1',
+ *   forcePathStyle: true,
+ * });
+ * agent.session('s3://workspace/users/u1/sessions/s1', { workspaceBackend: backend });
+ * ```
+ */
+export declare class S3WorkspaceBackend {
+  kind: string
+  s3: JsS3BackendConfig
+  /** Create an S3-compatible workspace backend. */
+  constructor(config: JsS3BackendConfig)
+}
+/**
  * Stdio transport for AHP (Agent Harness Protocol).
  *
  * Launches a child process and communicates via stdin/stdout using JSON-RPC 2.0.
@@ -919,6 +1012,14 @@ export declare class Session {
   program(options: ProgramScriptOptions): Promise<ToolResult>
   /** Read a file from the workspace. */
   readFile(path: string): Promise<string>
+  /** Write a file in the workspace. */
+  writeFile(path: string, content: string): Promise<ToolResult>
+  /** List a directory in the workspace. */
+  ls(path?: string | undefined | null): Promise<ToolResult>
+  /** Edit a file by replacing text in the workspace. */
+  editFile(path: string, oldString: string, newString: string, replaceAll?: boolean | undefined | null): Promise<ToolResult>
+  /** Apply a unified diff patch to a workspace file. */
+  patchFile(path: string, diff: string): Promise<ToolResult>
   /** Execute a bash command in the workspace. */
   bash(command: string): Promise<string>
   /** Search for files matching a glob pattern. */

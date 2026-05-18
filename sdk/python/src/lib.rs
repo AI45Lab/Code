@@ -23,13 +23,13 @@ use a3s_code_core::config::{
     SearchConfig as RustSearchConfig, SearchEngineConfig as RustSearchEngineConfig,
     SearchHealthConfig as RustSearchHealthConfig,
 };
+use a3s_code_core::hitl::{
+    ConfirmationPolicy as RustConfirmationPolicy, TimeoutAction as RustTimeoutAction,
+};
 use a3s_code_core::hooks::{
     Hook as RustHook, HookConfig as RustHookConfig, HookEvent as RustHookEvent,
     HookEventType as RustHookEventType, HookHandler as RustHookHandler,
     HookMatcher as RustHookMatcher, HookResponse as RustHookResponse,
-};
-use a3s_code_core::hitl::{
-    ConfirmationPolicy as RustConfirmationPolicy, TimeoutAction as RustTimeoutAction,
 };
 use a3s_code_core::llm::Message as RustMessage;
 use a3s_code_core::permissions::{
@@ -1221,8 +1221,7 @@ impl PySession {
         prompt: &Bound<'_, PyAny>,
         history: Option<&Bound<'_, PyList>>,
     ) -> PyResult<PyAgentResult> {
-        let (prompt, rust_history, rust_attachments) =
-            py_session_input_to_parts(prompt, history)?;
+        let (prompt, rust_history, rust_attachments) = py_session_input_to_parts(prompt, history)?;
         let session = self.inner.clone();
         let result = if rust_attachments.is_empty() {
             py.allow_threads(move || {
@@ -1267,8 +1266,7 @@ impl PySession {
         prompt: &Bound<'_, PyAny>,
         history: Option<&Bound<'_, PyList>>,
     ) -> PyResult<PyEventStream> {
-        let (prompt, rust_history, rust_attachments) =
-            py_session_input_to_parts(prompt, history)?;
+        let (prompt, rust_history, rust_attachments) = py_session_input_to_parts(prompt, history)?;
         let session = self.inner.clone();
         let (rx, _handle) = if rust_attachments.is_empty() {
             py.allow_threads(move || {
@@ -1295,11 +1293,7 @@ impl PySession {
     ///
     /// Prefer this for new integrations when the call may need history,
     /// attachments, or future request options.
-    fn send_request(
-        &self,
-        py: Python<'_>,
-        request: &Bound<'_, PyDict>,
-    ) -> PyResult<PyAgentResult> {
+    fn send_request(&self, py: Python<'_>, request: &Bound<'_, PyDict>) -> PyResult<PyAgentResult> {
         let (prompt, rust_history, rust_attachments) = py_session_request_to_parts(request)?;
         let session = self.inner.clone();
 
@@ -1471,8 +1465,7 @@ impl PySession {
     /// Return active tool calls observed for the currently running operation.
     fn active_tools(&self, py: Python<'_>) -> PyResult<PyObject> {
         let session = self.inner.clone();
-        let active_tools =
-            py.allow_threads(move || get_runtime().block_on(session.active_tools()));
+        let active_tools = py.allow_threads(move || get_runtime().block_on(session.active_tools()));
         let json = serde_json::to_string(&active_tools).map_err(|e| {
             PyRuntimeError::new_err(format!("Failed to serialize active tools: {e}"))
         })?;
@@ -1510,11 +1503,7 @@ impl PySession {
     }
 
     /// Delegate a bounded task with the compact object-shaped API.
-    fn task(
-        &self,
-        py: Python<'_>,
-        options: &Bound<'_, PyDict>,
-    ) -> PyResult<PyToolResult> {
+    fn task(&self, py: Python<'_>, options: &Bound<'_, PyDict>) -> PyResult<PyToolResult> {
         let json_str = py_dict_to_json(options)?;
         let args: serde_json::Value = serde_json::from_str(&json_str)
             .map_err(|e| PyValueError::new_err(format!("Invalid task options: {e}")))?;
@@ -1570,7 +1559,9 @@ impl PySession {
         let session = self.inner.clone();
         let result = py
             .allow_threads(move || get_runtime().block_on(session.tool("parallel_task", args)))
-            .map_err(|e| PyRuntimeError::new_err(format!("Parallel task delegation failed: {e}")))?;
+            .map_err(|e| {
+                PyRuntimeError::new_err(format!("Parallel task delegation failed: {e}"))
+            })?;
 
         Ok(PyToolResult {
             name: result.name,
@@ -1581,11 +1572,7 @@ impl PySession {
     }
 
     /// Execute several delegated child-agent tasks concurrently through ``parallel_task``.
-    fn parallel_task(
-        &self,
-        py: Python<'_>,
-        tasks: &Bound<'_, PyAny>,
-    ) -> PyResult<PyToolResult> {
+    fn parallel_task(&self, py: Python<'_>, tasks: &Bound<'_, PyAny>) -> PyResult<PyToolResult> {
         self.tasks(py, tasks)
     }
 
@@ -1615,6 +1602,82 @@ impl PySession {
         let session = self.inner.clone();
         py.allow_threads(move || get_runtime().block_on(session.read_file(&path)))
             .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
+    }
+
+    /// Write a file in the workspace.
+    fn write_file(&self, py: Python<'_>, path: String, content: String) -> PyResult<PyToolResult> {
+        let session = self.inner.clone();
+        let result = py
+            .allow_threads(move || get_runtime().block_on(session.write_file(&path, &content)))
+            .map_err(|e| PyRuntimeError::new_err(format!("{e}")))?;
+
+        Ok(PyToolResult {
+            name: result.name,
+            output: result.output,
+            exit_code: result.exit_code,
+            metadata_json: result.metadata.as_ref().map(serde_json::Value::to_string),
+        })
+    }
+
+    /// List a directory in the workspace.
+    #[pyo3(signature = (path=None))]
+    fn ls(&self, py: Python<'_>, path: Option<String>) -> PyResult<PyToolResult> {
+        let session = self.inner.clone();
+        let result = py
+            .allow_threads(move || get_runtime().block_on(session.ls(path.as_deref())))
+            .map_err(|e| PyRuntimeError::new_err(format!("{e}")))?;
+
+        Ok(PyToolResult {
+            name: result.name,
+            output: result.output,
+            exit_code: result.exit_code,
+            metadata_json: result.metadata.as_ref().map(serde_json::Value::to_string),
+        })
+    }
+
+    /// Edit a file by replacing text in the workspace.
+    #[pyo3(signature = (path, old_string, new_string, replace_all=false))]
+    fn edit_file(
+        &self,
+        py: Python<'_>,
+        path: String,
+        old_string: String,
+        new_string: String,
+        replace_all: bool,
+    ) -> PyResult<PyToolResult> {
+        let session = self.inner.clone();
+        let result = py
+            .allow_threads(move || {
+                get_runtime().block_on(session.edit_file(
+                    &path,
+                    &old_string,
+                    &new_string,
+                    replace_all,
+                ))
+            })
+            .map_err(|e| PyRuntimeError::new_err(format!("{e}")))?;
+
+        Ok(PyToolResult {
+            name: result.name,
+            output: result.output,
+            exit_code: result.exit_code,
+            metadata_json: result.metadata.as_ref().map(serde_json::Value::to_string),
+        })
+    }
+
+    /// Apply a unified diff patch to a workspace file.
+    fn patch_file(&self, py: Python<'_>, path: String, diff: String) -> PyResult<PyToolResult> {
+        let session = self.inner.clone();
+        let result = py
+            .allow_threads(move || get_runtime().block_on(session.patch_file(&path, &diff)))
+            .map_err(|e| PyRuntimeError::new_err(format!("{e}")))?;
+
+        Ok(PyToolResult {
+            name: result.name,
+            output: result.output,
+            exit_code: result.exit_code,
+            metadata_json: result.metadata.as_ref().map(serde_json::Value::to_string),
+        })
     }
 
     /// Execute a bash command in the workspace.
@@ -1758,11 +1821,7 @@ impl PySession {
     /// Example:
     ///     session.git_command({"command": "status"})
     ///     session.git_command({"command": "worktree", "subcommand": "list"})
-    fn git_command(
-        &self,
-        py: Python<'_>,
-        args: &Bound<'_, PyDict>,
-    ) -> PyResult<PyToolResult> {
+    fn git_command(&self, py: Python<'_>, args: &Bound<'_, PyDict>) -> PyResult<PyToolResult> {
         let json_str = py_dict_to_json(args)?;
         let args: serde_json::Value = serde_json::from_str(&json_str)
             .map_err(|e| PyValueError::new_err(format!("Invalid git args: {e}")))?;
@@ -2066,11 +2125,7 @@ impl PySession {
     ///         "env": {"GITHUB_TOKEN": "..."},
     ///         "timeout_ms": 30000,
     ///     })
-    fn add_mcp_server_config(
-        &self,
-        py: Python<'_>,
-        config: &Bound<'_, PyDict>,
-    ) -> PyResult<usize> {
+    fn add_mcp_server_config(&self, py: Python<'_>, config: &Bound<'_, PyDict>) -> PyResult<usize> {
         let json_str = py_dict_to_json(config)?;
         let value: serde_json::Value = serde_json::from_str(&json_str)
             .map_err(|e| PyValueError::new_err(format!("Invalid MCP server config: {e}")))?;
@@ -3019,6 +3074,144 @@ impl PyDefaultSecurityProvider {
     }
 }
 
+/// Local filesystem workspace backend.
+///
+/// This is the explicit typed form of the default local workspace behavior.
+/// It is useful when callers want to pass workspace backends through the same
+/// option surface that remote/browser backends will use.
+///
+/// .. code-block:: python
+///
+///     opts = SessionOptions()
+///     opts.workspace_backend = LocalWorkspaceBackend('/repo')
+///     session = agent.session('/repo', opts)
+#[pyclass(name = "LocalWorkspaceBackend")]
+#[derive(Clone)]
+struct PyLocalWorkspaceBackend {
+    #[pyo3(get, set)]
+    root: String,
+}
+
+#[pymethods]
+impl PyLocalWorkspaceBackend {
+    #[new]
+    fn new(root: String) -> Self {
+        Self { root }
+    }
+
+    fn __repr__(&self) -> String {
+        format!("LocalWorkspaceBackend(root={:?})", self.root)
+    }
+}
+
+/// S3-compatible object-storage workspace backend.
+///
+/// Points the built-in file tools (``read``, ``write``, ``edit``, ``patch``,
+/// ``ls``) at any S3-compatible bucket (AWS S3, MinIO, RustFS, Cloudflare R2,
+/// Backblaze B2, ...). ``bash``, ``git``, ``grep`` and ``glob`` are
+/// intentionally **not** registered when this backend is used because
+/// object storage cannot service them.
+///
+/// .. code-block:: python
+///
+///     opts = SessionOptions()
+///     opts.workspace_backend = S3WorkspaceBackend(
+///         bucket="workspace",
+///         prefix="users/u1/sessions/s1",
+///         access_key_id="AKIA...",
+///         secret_access_key="...",
+///         endpoint="https://minio.local:9000",
+///         region="us-east-1",
+///         force_path_style=True,
+///     )
+///     session = agent.session("s3://workspace/users/u1/sessions/s1", opts)
+#[pyclass(name = "S3WorkspaceBackend")]
+#[derive(Clone)]
+struct PyS3WorkspaceBackend {
+    #[pyo3(get, set)]
+    bucket: String,
+    #[pyo3(get, set)]
+    prefix: String,
+    #[pyo3(get, set)]
+    access_key_id: String,
+    #[pyo3(get, set)]
+    secret_access_key: String,
+    #[pyo3(get, set)]
+    endpoint: Option<String>,
+    #[pyo3(get, set)]
+    region: Option<String>,
+    #[pyo3(get, set)]
+    session_token: Option<String>,
+    #[pyo3(get, set)]
+    force_path_style: bool,
+}
+
+#[pymethods]
+impl PyS3WorkspaceBackend {
+    #[new]
+    #[pyo3(signature = (
+        bucket,
+        prefix,
+        access_key_id,
+        secret_access_key,
+        endpoint = None,
+        region = None,
+        session_token = None,
+        force_path_style = false,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        bucket: String,
+        prefix: String,
+        access_key_id: String,
+        secret_access_key: String,
+        endpoint: Option<String>,
+        region: Option<String>,
+        session_token: Option<String>,
+        force_path_style: bool,
+    ) -> Self {
+        Self {
+            bucket,
+            prefix,
+            access_key_id,
+            secret_access_key,
+            endpoint,
+            region,
+            session_token,
+            force_path_style,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "S3WorkspaceBackend(bucket={:?}, prefix={:?}, endpoint={:?}, region={:?}, force_path_style={})",
+            self.bucket, self.prefix, self.endpoint, self.region, self.force_path_style
+        )
+    }
+}
+
+impl PyS3WorkspaceBackend {
+    fn to_core(&self) -> a3s_code_core::S3BackendConfig {
+        let mut cfg = a3s_code_core::S3BackendConfig::new(
+            self.bucket.clone(),
+            self.prefix.clone(),
+            self.access_key_id.clone(),
+            self.secret_access_key.clone(),
+        )
+        .force_path_style(self.force_path_style);
+        if let Some(ref endpoint) = self.endpoint {
+            cfg = cfg.endpoint(endpoint.clone());
+        }
+        if let Some(ref region) = self.region {
+            cfg = cfg.region(region.clone());
+        }
+        if let Some(ref token) = self.session_token {
+            cfg = cfg.session_token(token.clone());
+        }
+        cfg
+    }
+}
+
 // ============================================================================
 // AHP Transport Classes
 // ============================================================================
@@ -3476,9 +3669,7 @@ fn parse_py_confirmation_inheritance(
     }
 }
 
-fn confirmation_inheritance_to_py(
-    ci: &a3s_code_core::subagent::ConfirmationInheritance,
-) -> String {
+fn confirmation_inheritance_to_py(ci: &a3s_code_core::subagent::ConfirmationInheritance) -> String {
     use a3s_code_core::subagent::ConfirmationInheritance;
     match ci {
         ConfirmationInheritance::AutoApprove => "auto_approve".to_string(),
@@ -3524,6 +3715,8 @@ struct PySessionOptions {
     session_store: Option<pyo3::PyObject>,
     /// Security provider. Set to ``DefaultSecurityProvider`` to enable taint tracking.
     security_provider: Option<pyo3::PyObject>,
+    /// Workspace backend. Set to ``LocalWorkspaceBackend`` to use local filesystem tools explicitly.
+    workspace_backend: Option<pyo3::PyObject>,
     /// Custom role/identity (e.g. "You are a Python expert")
     role: Option<String>,
     /// Custom coding guidelines
@@ -3617,6 +3810,9 @@ impl Clone for PySessionOptions {
             security_provider: pyo3::Python::with_gil(|py| {
                 self.security_provider.as_ref().map(|o| o.clone_ref(py))
             }),
+            workspace_backend: pyo3::Python::with_gil(|py| {
+                self.workspace_backend.as_ref().map(|o| o.clone_ref(py))
+            }),
             role: self.role.clone(),
             guidelines: self.guidelines.clone(),
             response_style: self.response_style.clone(),
@@ -3661,6 +3857,7 @@ impl PySessionOptions {
             memory_store: None,
             session_store: None,
             security_provider: None,
+            workspace_backend: None,
             role: None,
             guidelines: None,
             response_style: None,
@@ -3853,6 +4050,23 @@ impl PySessionOptions {
     #[setter]
     fn set_security_provider(&mut self, value: Option<pyo3::PyObject>) {
         self.security_provider = value;
+    }
+
+    /// Workspace backend used by built-in tools.
+    ///
+    /// Assign a ``LocalWorkspaceBackend`` instance:
+    ///
+    /// .. code-block:: python
+    ///
+    ///     opts.workspace_backend = LocalWorkspaceBackend('/repo')
+    #[getter]
+    fn get_workspace_backend(&self, py: pyo3::Python<'_>) -> Option<pyo3::PyObject> {
+        self.workspace_backend.as_ref().map(|o| o.clone_ref(py))
+    }
+
+    #[setter]
+    fn set_workspace_backend(&mut self, value: Option<pyo3::PyObject>) {
+        self.workspace_backend = value;
     }
 
     /// Custom role/identity prepended before the core agentic prompt.
@@ -4100,7 +4314,7 @@ impl PySessionOptions {
 
     fn __repr__(&self) -> String {
         format!(
-            "SessionOptions(model={:?}, builtin_skills={}, queue_config={}, auto_compact={}, memory_store={}, session_store={}, security_provider={}, inline_skills={})",
+            "SessionOptions(model={:?}, builtin_skills={}, queue_config={}, auto_compact={}, memory_store={}, session_store={}, security_provider={}, workspace_backend={}, inline_skills={})",
             self.model,
             self.builtin_skills,
             if self.queue_config.is_some() { "Some(...)" } else { "None" },
@@ -4108,6 +4322,7 @@ impl PySessionOptions {
             if self.memory_store.is_some() { "Some(...)" } else { "None" },
             if self.session_store.is_some() { "Some(...)" } else { "None" },
             if self.security_provider.is_some() { "Some(...)" } else { "None" },
+            if self.workspace_backend.is_some() { "Some(...)" } else { "None" },
             self.inline_skills.len(),
         )
     }
@@ -4254,9 +4469,7 @@ fn parse_handler_mode(mode: &str) -> PyResult<RustTaskHandlerMode> {
 fn parse_planning_mode(mode: &str) -> PyResult<RustPlanningMode> {
     match mode.trim().to_ascii_lowercase().as_str() {
         "auto" => Ok(RustPlanningMode::Auto),
-        "enabled" | "enable" | "on" | "force" | "forced" | "true" => {
-            Ok(RustPlanningMode::Enabled)
-        }
+        "enabled" | "enable" | "on" | "force" | "forced" | "true" => Ok(RustPlanningMode::Enabled),
         "disabled" | "disable" | "off" | "false" => Ok(RustPlanningMode::Disabled),
         _ => Err(PyValueError::new_err(format!(
             "Invalid planning_mode '{}'. Expected 'auto', 'enabled', or 'disabled'",
@@ -4302,7 +4515,9 @@ fn delegate_task_args(
 
 fn parallel_task_args(tasks: serde_json::Value) -> PyResult<serde_json::Value> {
     if !tasks.is_array() {
-        return Err(PyValueError::new_err("tasks must be a list of dictionaries"));
+        return Err(PyValueError::new_err(
+            "tasks must be a list of dictionaries",
+        ));
     }
     Ok(serde_json::json!({ "tasks": tasks }))
 }
@@ -4387,6 +4602,35 @@ fn build_rust_session_options(so: PySessionOptions) -> PyResult<RustSessionOptio
         });
         if is_default {
             o = o.with_default_security();
+        }
+    }
+    if let Some(ref backend) = so.workspace_backend {
+        enum BackendKind {
+            Local(String),
+            S3(a3s_code_core::S3BackendConfig),
+            Unknown,
+        }
+        let resolved = Python::with_gil(|py| -> BackendKind {
+            if let Ok(local) = backend.extract::<pyo3::PyRef<PyLocalWorkspaceBackend>>(py) {
+                return BackendKind::Local(local.root.clone());
+            }
+            if let Ok(s3) = backend.extract::<pyo3::PyRef<PyS3WorkspaceBackend>>(py) {
+                return BackendKind::S3(s3.to_core());
+            }
+            BackendKind::Unknown
+        });
+        match resolved {
+            BackendKind::Local(root) => {
+                o = o.with_workspace_backend(a3s_code_core::WorkspaceServices::local(root));
+            }
+            BackendKind::S3(cfg) => {
+                o = o.with_workspace_backend(a3s_code_core::WorkspaceServices::s3(cfg));
+            }
+            BackendKind::Unknown => {
+                return Err(PyTypeError::new_err(
+                    "workspace_backend must be a LocalWorkspaceBackend or S3WorkspaceBackend instance",
+                ));
+            }
         }
     }
     // Build prompt slots if any slot is set
@@ -4660,7 +4904,12 @@ fn normalize_mcp_server_config(
         .as_object_mut()
         .ok_or_else(|| PyValueError::new_err("MCP server config must be a dict"))?;
 
-    for key in ["timeout_ms", "timeoutMs", "tool_timeout_ms", "toolTimeoutMs"] {
+    for key in [
+        "timeout_ms",
+        "timeoutMs",
+        "tool_timeout_ms",
+        "toolTimeoutMs",
+    ] {
         if let Some(timeout_ms) = obj.remove(key) {
             let timeout_ms = timeout_ms
                 .as_u64()
@@ -5181,6 +5430,8 @@ fn a3s_code_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyFileSessionStore>()?;
     m.add_class::<PyMemorySessionStore>()?;
     m.add_class::<PyDefaultSecurityProvider>()?;
+    m.add_class::<PyLocalWorkspaceBackend>()?;
+    m.add_class::<PyS3WorkspaceBackend>()?;
     m.add_class::<PyStdioTransport>()?;
     m.add_class::<PyHttpTransport>()?;
     m.add_class::<PyWebSocketTransport>()?;
@@ -5264,6 +5515,59 @@ mod tests {
     }
 
     #[test]
+    fn local_workspace_backend_maps_to_rust_session_options() {
+        pyo3::prepare_freethreaded_python();
+        let opts = Python::with_gil(|py| {
+            let backend = Py::new(
+                py,
+                PyLocalWorkspaceBackend {
+                    root: ".".to_string(),
+                },
+            )
+            .unwrap();
+            let mut session_options = PySessionOptions::new();
+            session_options.workspace_backend = Some(backend.into_any());
+            build_rust_session_options(session_options)
+        })
+        .unwrap();
+
+        assert!(opts.workspace_services.is_some());
+    }
+
+    #[test]
+    fn s3_workspace_backend_maps_to_rust_session_options() {
+        pyo3::prepare_freethreaded_python();
+        let opts = Python::with_gil(|py| {
+            let backend = Py::new(
+                py,
+                PyS3WorkspaceBackend {
+                    bucket: "workspace".to_string(),
+                    prefix: "users/u1/sessions/s1".to_string(),
+                    access_key_id: "AKIA".to_string(),
+                    secret_access_key: "secret".to_string(),
+                    endpoint: Some("https://minio.local:9000".to_string()),
+                    region: Some("us-east-1".to_string()),
+                    session_token: None,
+                    force_path_style: true,
+                },
+            )
+            .unwrap();
+            let mut session_options = PySessionOptions::new();
+            session_options.workspace_backend = Some(backend.into_any());
+            build_rust_session_options(session_options)
+        })
+        .unwrap();
+
+        let services = opts.workspace_services.expect("s3 backend builds services");
+        let caps = services.capabilities();
+        assert!(caps.read);
+        assert!(caps.write);
+        assert!(!caps.exec);
+        assert!(!caps.git);
+        assert!(!caps.search);
+    }
+
+    #[test]
     fn delegate_task_args_use_core_task_schema() {
         let args = delegate_task_args(
             "explore".to_string(),
@@ -5305,8 +5609,11 @@ mod tests {
                 "async function run(ctx, inputs) { return inputs; }",
             )
             .unwrap();
-            dict.set_item("inputs", serde_json::json!({ "needle": "auth" }).to_string())
-                .unwrap();
+            dict.set_item(
+                "inputs",
+                serde_json::json!({ "needle": "auth" }).to_string(),
+            )
+            .unwrap();
             dict.set_item("allowedTools", vec!["grep", "read"]).unwrap();
 
             let args = normalize_program_script_options(&dict).unwrap();
@@ -5354,10 +5661,7 @@ mod tests {
         .unwrap();
 
         match config.transport {
-            a3s_code_core::mcp::protocol::McpTransportConfig::StreamableHttp {
-                url,
-                headers,
-            } => {
+            a3s_code_core::mcp::protocol::McpTransportConfig::StreamableHttp { url, headers } => {
                 assert_eq!(url, "https://example.com/mcp");
                 assert_eq!(
                     headers.get("Authorization").map(String::as_str),

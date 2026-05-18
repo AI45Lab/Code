@@ -1193,6 +1193,42 @@ pub struct JsSecurityProvider {
     pub kind: String,
 }
 
+#[napi(object)]
+#[derive(Clone, Default)]
+pub struct JsWorkspaceBackend {
+    pub kind: String,
+    pub root: Option<String>,
+    pub s3: Option<JsS3BackendConfig>,
+}
+
+/// Configuration for an S3-compatible workspace backend.
+///
+/// Use this with [`S3WorkspaceBackend`] to point a session's built-in file
+/// tools at any S3-compatible endpoint (AWS S3, MinIO, RustFS, R2, etc.).
+/// `endpoint` is optional — omit it to use the AWS default. `prefix` is
+/// the logical workspace root inside the bucket; every workspace path
+/// becomes `<prefix>/<path>` when sent to S3.
+#[napi(object)]
+#[derive(Clone, Default)]
+pub struct JsS3BackendConfig {
+    /// Optional S3 endpoint URL. Omit for AWS S3 (the SDK will compute it
+    /// from `region`). Set to `https://...` for MinIO / RustFS / R2 / etc.
+    pub endpoint: Option<String>,
+    /// AWS region. Defaults to `us-east-1` when omitted.
+    pub region: Option<String>,
+    /// Static access key. Use `sessionToken` together when STS-issued.
+    pub access_key_id: String,
+    pub secret_access_key: String,
+    pub session_token: Option<String>,
+    /// Bucket name.
+    pub bucket: String,
+    /// Logical workspace prefix inside the bucket (without leading/trailing
+    /// slashes). Use `""` to make the bucket root the workspace.
+    pub prefix: String,
+    /// `true` for MinIO / RustFS / most non-AWS endpoints; `false` for AWS S3.
+    pub force_path_style: Option<bool>,
+}
+
 /// File-backed long-term memory store.
 ///
 /// ```js
@@ -1294,6 +1330,72 @@ impl DefaultSecurityProvider {
 impl Default for DefaultSecurityProvider {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Local filesystem workspace backend.
+///
+/// This is the explicit typed form of the default local workspace behavior.
+/// It is useful when callers want to pass workspace backends through the same
+/// option surface that remote/browser backends will use.
+///
+/// ```js
+/// agent.session('/repo', { workspaceBackend: new LocalWorkspaceBackend('/repo') });
+/// ```
+#[napi]
+pub struct LocalWorkspaceBackend {
+    pub kind: String,
+    pub root: String,
+}
+
+#[napi]
+impl LocalWorkspaceBackend {
+    /// Create a local filesystem workspace backend rooted at `root`.
+    #[napi(constructor)]
+    pub fn new(root: String) -> Self {
+        Self {
+            kind: "local".to_string(),
+            root,
+        }
+    }
+}
+
+/// S3-compatible object-storage workspace backend.
+///
+/// Points built-in file tools (`read`, `write`, `edit`, `patch`, `ls`) at an
+/// S3-compatible bucket. Works with AWS S3, MinIO, RustFS, Cloudflare R2,
+/// Backblaze B2, and other S3-API-compatible services.
+///
+/// `bash`, `git`, `grep`, and `glob` are intentionally **not** registered
+/// when this backend is in use — object storage cannot service them.
+///
+/// ```js
+/// const backend = new S3WorkspaceBackend({
+///   endpoint: 'https://minio.local:9000',
+///   region: 'us-east-1',
+///   accessKeyId: 'AKIA...',
+///   secretAccessKey: '...',
+///   bucket: 'workspace',
+///   prefix: 'users/u1/sessions/s1',
+///   forcePathStyle: true,
+/// });
+/// agent.session('s3://workspace/users/u1/sessions/s1', { workspaceBackend: backend });
+/// ```
+#[napi]
+pub struct S3WorkspaceBackend {
+    pub kind: String,
+    pub s3: JsS3BackendConfig,
+}
+
+#[napi]
+impl S3WorkspaceBackend {
+    /// Create an S3-compatible workspace backend.
+    #[napi(constructor)]
+    pub fn new(config: JsS3BackendConfig) -> Self {
+        Self {
+            kind: "s3".to_string(),
+            s3: config,
+        }
     }
 }
 
@@ -1616,6 +1718,15 @@ pub struct SessionOptions {
     /// agent.session('.', { securityProvider: new DefaultSecurityProvider() });
     /// ```
     pub security_provider: Option<JsSecurityProvider>,
+    /// Workspace backend used by built-in tools.
+    ///
+    /// Pass `new LocalWorkspaceBackend("/repo")` to explicitly use the local
+    /// filesystem backend. This option is the SDK surface for future remote,
+    /// browser, DFS, and container-backed workspace implementations.
+    /// ```js
+    /// agent.session('/repo', { workspaceBackend: new LocalWorkspaceBackend('/repo') });
+    /// ```
+    pub workspace_backend: Option<JsWorkspaceBackend>,
     /// Custom role/identity prepended before the core agentic prompt.
     /// Example: "You are a senior Python developer specializing in FastAPI."
     pub role: Option<String>,
@@ -1869,6 +1980,28 @@ fn parse_handler_mode(mode: &str) -> napi::Result<RustTaskHandlerMode> {
     }
 }
 
+fn s3_config_to_core(js: &JsS3BackendConfig) -> a3s_code_core::S3BackendConfig {
+    let mut cfg = a3s_code_core::S3BackendConfig::new(
+        js.bucket.clone(),
+        js.prefix.clone(),
+        js.access_key_id.clone(),
+        js.secret_access_key.clone(),
+    );
+    if let Some(ref endpoint) = js.endpoint {
+        cfg = cfg.endpoint(endpoint.clone());
+    }
+    if let Some(ref region) = js.region {
+        cfg = cfg.region(region.clone());
+    }
+    if let Some(ref token) = js.session_token {
+        cfg = cfg.session_token(token.clone());
+    }
+    if let Some(force) = js.force_path_style {
+        cfg = cfg.force_path_style(force);
+    }
+    cfg
+}
+
 /// Build RustSessionOptions from JS SessionOptions.
 fn js_session_options_to_rust(options: Option<SessionOptions>) -> napi::Result<RustSessionOptions> {
     let Some(o) = options else {
@@ -1946,6 +2079,32 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> napi::Result<R
     if let Some(ref sec) = o.security_provider {
         if sec.kind.is_empty() || sec.kind == "default" {
             opts = opts.with_default_security();
+        }
+    }
+    if let Some(ref backend) = o.workspace_backend {
+        match backend.kind.as_str() {
+            "" | "local" => {
+                let root = backend.root.as_ref().ok_or_else(|| {
+                    napi::Error::from_reason("LocalWorkspaceBackend requires a root path")
+                })?;
+                opts = opts
+                    .with_workspace_backend(a3s_code_core::WorkspaceServices::local(root.clone()));
+            }
+            "s3" => {
+                let s3_config = backend.s3.as_ref().ok_or_else(|| {
+                    napi::Error::from_reason(
+                        "S3WorkspaceBackend requires the `s3` configuration field",
+                    )
+                })?;
+                let core_config = s3_config_to_core(s3_config);
+                opts =
+                    opts.with_workspace_backend(a3s_code_core::WorkspaceServices::s3(core_config));
+            }
+            other => {
+                return Err(napi::Error::from_reason(format!(
+                    "Unsupported workspace backend kind '{other}'"
+                )));
+            }
         }
     }
     // Build prompt slots if any slot is set
@@ -2260,9 +2419,7 @@ fn parse_confirmation_inheritance(
     }
 }
 
-fn confirmation_inheritance_to_js(
-    ci: &a3s_code_core::subagent::ConfirmationInheritance,
-) -> String {
+fn confirmation_inheritance_to_js(ci: &a3s_code_core::subagent::ConfirmationInheritance) -> String {
     use a3s_code_core::subagent::ConfirmationInheritance;
     match ci {
         ConfirmationInheritance::AutoApprove => "auto_approve".to_string(),
@@ -2769,6 +2926,69 @@ impl Session {
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(|e| napi::Error::from_reason(format!("{e}")))
+    }
+
+    /// Write a file in the workspace.
+    #[napi]
+    pub async fn write_file(&self, path: String, content: String) -> napi::Result<ToolResult> {
+        let session = self.inner.clone();
+        let result = get_runtime()
+            .spawn(async move { session.write_file(&path, &content).await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+            .map_err(|e| napi::Error::from_reason(format!("{e}")))?;
+        Ok(tool_result_from_core(result))
+    }
+
+    /// List a directory in the workspace.
+    #[napi]
+    pub async fn ls(&self, path: Option<String>) -> napi::Result<ToolResult> {
+        let session = self.inner.clone();
+        let result = get_runtime()
+            .spawn(async move { session.ls(path.as_deref()).await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+            .map_err(|e| napi::Error::from_reason(format!("{e}")))?;
+        Ok(tool_result_from_core(result))
+    }
+
+    /// Edit a file by replacing text in the workspace.
+    #[napi]
+    pub async fn edit_file(
+        &self,
+        path: String,
+        old_string: String,
+        new_string: String,
+        replace_all: Option<bool>,
+    ) -> napi::Result<ToolResult> {
+        let session = self.inner.clone();
+        let result = get_runtime()
+            .spawn(async move {
+                session
+                    .edit_file(
+                        &path,
+                        &old_string,
+                        &new_string,
+                        replace_all.unwrap_or(false),
+                    )
+                    .await
+            })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+            .map_err(|e| napi::Error::from_reason(format!("{e}")))?;
+        Ok(tool_result_from_core(result))
+    }
+
+    /// Apply a unified diff patch to a workspace file.
+    #[napi]
+    pub async fn patch_file(&self, path: String, diff: String) -> napi::Result<ToolResult> {
+        let session = self.inner.clone();
+        let result = get_runtime()
+            .spawn(async move { session.patch_file(&path, &diff).await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+            .map_err(|e| napi::Error::from_reason(format!("{e}")))?;
+        Ok(tool_result_from_core(result))
     }
 
     /// Execute a bash command in the workspace.
@@ -4408,6 +4628,79 @@ mod tests {
                 .map(|model| model.model_ref()),
             Some("openai/gpt-4o".to_string())
         );
+    }
+
+    #[test]
+    fn local_workspace_backend_maps_to_rust_session_options() {
+        let opts = js_session_options_to_rust(Some(SessionOptions {
+            workspace_backend: Some(JsWorkspaceBackend {
+                kind: "local".to_string(),
+                root: Some(".".to_string()),
+                s3: None,
+            }),
+            ..Default::default()
+        }))
+        .unwrap();
+
+        assert!(opts.workspace_services.is_some());
+    }
+
+    #[test]
+    fn workspace_backend_rejects_missing_local_root() {
+        let result = js_session_options_to_rust(Some(SessionOptions {
+            workspace_backend: Some(JsWorkspaceBackend {
+                kind: "local".to_string(),
+                root: None,
+                s3: None,
+            }),
+            ..Default::default()
+        }));
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn s3_workspace_backend_maps_to_rust_session_options() {
+        let opts = js_session_options_to_rust(Some(SessionOptions {
+            workspace_backend: Some(JsWorkspaceBackend {
+                kind: "s3".to_string(),
+                root: None,
+                s3: Some(JsS3BackendConfig {
+                    endpoint: Some("https://minio.local:9000".to_string()),
+                    region: Some("us-east-1".to_string()),
+                    access_key_id: "AKIA".to_string(),
+                    secret_access_key: "secret".to_string(),
+                    session_token: None,
+                    bucket: "workspace".to_string(),
+                    prefix: "users/u1/sessions/s1".to_string(),
+                    force_path_style: Some(true),
+                }),
+            }),
+            ..Default::default()
+        }))
+        .unwrap();
+
+        let services = opts.workspace_services.expect("s3 backend builds services");
+        let caps = services.capabilities();
+        assert!(caps.read);
+        assert!(caps.write);
+        assert!(!caps.exec, "S3 must not expose bash");
+        assert!(!caps.git, "S3 must not expose git");
+        assert!(!caps.search, "S3 must not expose grep/glob");
+    }
+
+    #[test]
+    fn workspace_backend_rejects_missing_s3_config() {
+        let result = js_session_options_to_rust(Some(SessionOptions {
+            workspace_backend: Some(JsWorkspaceBackend {
+                kind: "s3".to_string(),
+                root: None,
+                s3: None,
+            }),
+            ..Default::default()
+        }));
+
+        assert!(result.is_err());
     }
 
     #[test]

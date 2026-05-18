@@ -147,3 +147,5 @@ pub use workspace::{
     WorkspacePathResolver, WorkspaceRef, WorkspaceSearch, WorkspaceServices,
     WorkspaceServicesBuilder, WorkspaceWriteOutcome,
 };
+#[cfg(feature = "s3")]
+pub use workspace::{S3BackendConfig, S3WorkspaceBackend};

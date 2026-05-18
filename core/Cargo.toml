@@ -104,6 +104,12 @@ uuid = { version = "1.6", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 rquickjs = { version = "0.11.0", features = ["futures"] }
 
+# S3-compatible workspace backend (optional, gated by `s3` feature)
+aws-sdk-s3 = { version = "1", default-features = false, features = ["rt-tokio", "rustls"], optional = true }
+aws-credential-types = { version = "1", optional = true }
+aws-smithy-types = { version = "1", optional = true }
+aws-smithy-runtime-api = { version = "1", optional = true }
+
 [target.'cfg(unix)'.dependencies]
 a3s-ahp = { version = "2.4", path = "../../ahp", optional = true, features = ["http", "websocket", "unix-socket"] }
 
@@ -122,6 +128,15 @@ telemetry = [
 ]
 # Enable AHP (Agent Harness Protocol) integration for external supervision
 ahp = ["dep:a3s-ahp"]
+# Enable the S3-compatible workspace backend (`S3WorkspaceBackend`).
+# Brings in the AWS Rust SDK and is safe to point at any S3-compatible
+# endpoint (AWS S3, MinIO, RustFS, Cloudflare R2, ...).
+s3 = [
+    "dep:aws-sdk-s3",
+    "dep:aws-credential-types",
+    "dep:aws-smithy-types",
+    "dep:aws-smithy-runtime-api",
+]
 
 [dev-dependencies]
 # AHP for integration tests

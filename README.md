@@ -455,6 +455,108 @@ Intent-gated tools:
 
 This follows the same direction as modern agent harnesses: remove routine tool clutter from the model's context and expose capabilities only when the task asks for them.
 
+Workspace backends are capability providers behind the stable built-in tool
+contracts. By default, `read`, `write`, `edit`, `patch`, `ls`, `grep`, `glob`,
+`bash`, and `git` operate on the local workspace. Embedded hosts can supply
+`WorkspaceServices` through `SessionOptions::with_workspace_backend(...)` so
+those same tools target a DFS, browser workspace, remote container, or other
+host-managed environment.
+
+```rust
+use a3s_code_core::{Agent, SessionOptions, WorkspaceServices};
+
+# async fn run() -> anyhow::Result<()> {
+let agent = Agent::new("agent.acl").await?;
+let workspace = WorkspaceServices::local("/repo");
+let session = agent.session(
+    "/repo",
+    Some(SessionOptions::new().with_workspace_backend(workspace)),
+)?;
+# Ok(())
+# }
+```
+
+For non-local backends, A3S Code exposes tools according to declared workspace
+capabilities. `bash` is exposed only when a command runner is available,
+`grep`/`glob` only when a search provider is available, and `git` only when a
+workspace Git provider is available. Browser hosts can pair a virtual file
+system with a browser Git implementation, while cloud hosts can route the same
+tool contract through DFS or RPC-backed providers.
+
+#### S3-compatible storage backend
+
+When the `s3` Cargo feature is enabled, `S3WorkspaceBackend` lets built-in
+file tools (`read`, `write`, `edit`, `patch`, `ls`) target any S3-compatible
+endpoint — AWS S3, MinIO, RustFS, Cloudflare R2, Backblaze B2, and so on.
+`bash`, `git`, `grep`, and `glob` are intentionally not registered because
+object storage cannot service them.
+
+```toml
+# Cargo.toml
+[dependencies]
+a3s-code-core = { version = "2.6", features = ["s3"] }
+```
+
+```rust
+use a3s_code_core::{Agent, S3BackendConfig, SessionOptions, WorkspaceServices};
+
+# async fn run() -> anyhow::Result<()> {
+let agent = Agent::new("agent.acl").await?;
+let config = S3BackendConfig::new(
+    "workspace",                     // bucket
+    "users/u1/sessions/s1",          // workspace prefix inside the bucket
+    "AKIA...",                       // access key id
+    "...",                           // secret access key
+)
+.endpoint("https://minio.local:9000")  // omit for AWS S3
+.region("us-east-1")
+.force_path_style(true);               // true for MinIO/RustFS, false for AWS
+let session = agent.session(
+    "s3://workspace/users/u1/sessions/s1",
+    Some(SessionOptions::new().with_workspace_backend(WorkspaceServices::s3(config))),
+)?;
+# Ok(())
+# }
+```
+
+The Node and Python SDKs expose the same backend:
+
+```js
+// Node
+import { Agent, S3WorkspaceBackend } from '@a3s-lab/code';
+const session = agent.session(workspaceUri, {
+    workspaceBackend: new S3WorkspaceBackend({
+        endpoint: 'https://minio.local:9000',
+        region: 'us-east-1',
+        accessKeyId: 'AKIA...',
+        secretAccessKey: '...',
+        bucket: 'workspace',
+        prefix: 'users/u1/sessions/s1',
+        forcePathStyle: true,
+    }),
+});
+```
+
+```python
+# Python
+from a3s_code import Agent, S3WorkspaceBackend, SessionOptions
+opts = SessionOptions()
+opts.workspace_backend = S3WorkspaceBackend(
+    bucket="workspace",
+    prefix="users/u1/sessions/s1",
+    access_key_id="AKIA...",
+    secret_access_key="...",
+    endpoint="https://minio.local:9000",
+    region="us-east-1",
+    force_path_style=True,
+)
+session = agent.session(workspace_uri, opts)
+```
+
+S3 has no atomic read-modify-write, so concurrent writers to the same key may
+overwrite each other. Partition workspaces per session/user via the `prefix`
+field when running multi-tenant.
+
 ### 4. Programmatic Tool Calling
 
 High-frequency tool chains should move out of the LLM loop.

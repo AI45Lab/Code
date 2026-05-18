@@ -8,8 +8,12 @@
 //! [`WorkspaceServices`] through [`WorkspaceServicesBuilder`].
 
 mod local;
+#[cfg(feature = "s3")]
+mod s3;
 
 pub use local::LocalWorkspaceBackend;
+#[cfg(feature = "s3")]
+pub use s3::{S3BackendConfig, S3WorkspaceBackend};
 
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
