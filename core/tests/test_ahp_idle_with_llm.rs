@@ -518,7 +518,7 @@ fn test_minmax_llm_basic_completion() {
 
     let (api_key, base_url, model) = get_test_config();
 
-    let client = OpenAiClient::new(api_key.into(), model).with_base_url(base_url);
+    let client = OpenAiClient::new(api_key, model).with_base_url(base_url);
 
     let messages = vec![Message::user(
         "Reply with exactly the word 'HELLO' in uppercase, nothing else.",
@@ -539,7 +539,7 @@ fn test_minmax_llm_with_system_prompt() {
 
     let (api_key, base_url, model) = get_test_config();
 
-    let client = OpenAiClient::new(api_key.into(), model).with_base_url(base_url);
+    let client = OpenAiClient::new(api_key, model).with_base_url(base_url);
 
     let system = "You are a security analyzer. When given a command, respond with only 'SAFE' or 'DANGEROUS'.";
 

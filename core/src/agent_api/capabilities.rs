@@ -39,10 +39,18 @@ pub(super) struct SessionCapabilities {
 
 pub(super) fn build_session_capabilities(input: SessionCapabilityInput<'_>) -> SessionCapabilities {
     let artifact_limits = input.opts.artifact_store_limits.unwrap_or_default();
-    let tool_executor = Arc::new(ToolExecutor::new_with_artifact_limits(
-        input.workspace.display().to_string(),
-        artifact_limits,
-    ));
+    let workspace_services = input
+        .opts
+        .workspace_services
+        .clone()
+        .unwrap_or_else(|| crate::workspace::WorkspaceServices::local(input.workspace));
+    let tool_executor = Arc::new(
+        ToolExecutor::new_with_workspace_services_and_artifact_limits(
+            input.workspace.display().to_string(),
+            workspace_services,
+            artifact_limits,
+        ),
+    );
     let trace_sink = crate::trace::InMemoryTraceSink::default();
     tool_executor.set_trace_sink(Arc::new(trace_sink.clone()));
 
@@ -151,6 +159,7 @@ fn register_task_capability(
         max_execution_time_ms: opts.max_execution_time_ms,
         circuit_breaker_threshold: opts.circuit_breaker_threshold,
         confirmation_manager: opts.confirmation_manager.clone(),
+        workspace_services: opts.workspace_services.clone(),
     };
 
     let registry = Arc::new(registry);

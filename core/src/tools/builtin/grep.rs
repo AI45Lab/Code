@@ -2,11 +2,10 @@
 
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
 use crate::tools::MAX_OUTPUT_SIZE;
+use crate::workspace::WorkspaceGrepRequest;
 use anyhow::Result;
 use async_trait::async_trait;
-use ignore::WalkBuilder;
 use regex::Regex;
-use std::path::PathBuf;
 
 pub struct GrepTool;
 
@@ -75,126 +74,59 @@ impl Tool for GrepTool {
             pattern_str.to_string()
         };
 
-        let regex = match Regex::new(&regex_pattern) {
-            Ok(r) => r,
-            Err(e) => {
-                return Ok(ToolOutput::error(format!(
-                    "Invalid regex pattern '{}': {}",
-                    pattern_str, e
-                )))
-            }
-        };
+        if let Err(e) = Regex::new(&regex_pattern) {
+            return Ok(ToolOutput::error(format!(
+                "Invalid regex pattern '{}': {}",
+                pattern_str, e
+            )));
+        }
 
-        let search_path = match args.get("path").and_then(|v| v.as_str()) {
-            Some(p) => {
-                if std::path::Path::new(p).is_absolute() {
-                    PathBuf::from(p)
-                } else {
-                    ctx.workspace.join(p)
-                }
-            }
-            None => ctx.workspace.clone(),
+        let path_str = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+        let base = match ctx.resolve_workspace_path(path_str) {
+            Ok(path) => path,
+            Err(e) => return Ok(ToolOutput::error(format!("Failed to resolve path: {}", e))),
         };
 
         let glob_filter = args.get("glob").and_then(|v| v.as_str());
         let context_lines = args.get("context").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
 
-        // Use ignore crate to respect .gitignore
-        let mut builder = WalkBuilder::new(&search_path);
-        builder.hidden(false).git_ignore(true).git_global(true);
+        let Some(search) = ctx.workspace_services.search() else {
+            return Ok(ToolOutput::error(
+                "grep is not available: this workspace backend did not provide search",
+            ));
+        };
+        let request = WorkspaceGrepRequest {
+            base,
+            pattern: pattern_str.to_string(),
+            glob: glob_filter.map(str::to_string),
+            context_lines,
+            case_insensitive,
+            max_output_size: MAX_OUTPUT_SIZE,
+        };
+        let result = match ctx
+            .workspace_services
+            .run_with_timeout("grep", async move { search.grep(request).await })
+            .await
+        {
+            Ok(result) => result,
+            Err(e) => return Ok(ToolOutput::error(format!("Grep search failed: {}", e))),
+        };
 
-        if let Some(glob_pat) = glob_filter {
-            let mut types = ignore::types::TypesBuilder::new();
-            types.add("custom", glob_pat).ok();
-            types.select("custom");
-            if let Ok(built) = types.build() {
-                builder.types(built);
-            }
-        }
-
-        let mut output = String::new();
-        let mut match_count = 0;
-        let mut file_count = 0;
-        let mut total_size = 0;
-
-        for entry in builder.build().flatten() {
-            if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
-                continue;
-            }
-
-            let file_path = entry.path();
-            let content = match std::fs::read_to_string(file_path) {
-                Ok(c) => c,
-                Err(_) => continue, // Skip binary/unreadable files
-            };
-
-            let lines: Vec<&str> = content.lines().collect();
-            let mut file_matches = Vec::new();
-
-            for (line_idx, line) in lines.iter().enumerate() {
-                if regex.is_match(line) {
-                    file_matches.push(line_idx);
-                }
-            }
-
-            if file_matches.is_empty() {
-                continue;
-            }
-
-            file_count += 1;
-            // Normalize paths for consistent strip_prefix (avoids UNC prefix mismatch on Windows)
-            let file_display = file_path.to_string_lossy().replace('\\', "/");
-            let workspace_display = ctx.workspace.to_string_lossy().replace('\\', "/");
-            let rel_path = if let Some(stripped) = file_display.strip_prefix(&workspace_display) {
-                stripped.trim_start_matches('/').to_string()
-            } else {
-                file_path
-                    .strip_prefix(&ctx.workspace)
-                    .unwrap_or(file_path)
-                    .to_string_lossy()
-                    .to_string()
-            };
-
-            for &match_idx in &file_matches {
-                if total_size > MAX_OUTPUT_SIZE {
-                    output.push_str("\n... (output truncated)\n");
-                    return Ok(ToolOutput::success(format!(
-                        "{}Found {} matches in {} files (output truncated)",
-                        output, match_count, file_count
-                    )));
-                }
-
-                match_count += 1;
-
-                let start = match_idx.saturating_sub(context_lines);
-                let end = (match_idx + context_lines + 1).min(lines.len());
-
-                for (i, line) in lines[start..end].iter().enumerate() {
-                    let abs_i = start + i;
-                    let prefix = if abs_i == match_idx { ">" } else { " " };
-                    let line_str = format!("{}{}:{}: {}\n", prefix, rel_path, abs_i + 1, line);
-                    total_size += line_str.len();
-                    output.push_str(&line_str);
-                }
-
-                if context_lines > 0 {
-                    output.push_str("--\n");
-                    total_size += 3;
-                }
-            }
-        }
-
-        if match_count == 0 {
+        if result.match_count == 0 {
             Ok(ToolOutput::success(format!(
                 "No matches found for pattern: {}",
                 pattern_str
             )))
+        } else if result.truncated {
+            Ok(ToolOutput::success(format!(
+                "{}\n... (output truncated)\nFound {} matches in {} files (output truncated)",
+                result.output, result.match_count, result.file_count
+            )))
         } else {
-            output.push_str(&format!(
-                "\n{} match(es) in {} file(s)",
-                match_count, file_count
-            ));
-            Ok(ToolOutput::success(output))
+            Ok(ToolOutput::success(format!(
+                "{}\n{} match(es) in {} file(s)",
+                result.output, result.match_count, result.file_count
+            )))
         }
     }
 }
@@ -202,6 +134,7 @@ impl Tool for GrepTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[tokio::test]
     async fn test_grep_find_pattern() {

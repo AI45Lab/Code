@@ -52,6 +52,28 @@ Omit `allowedTools` to allow every registered session tool except `program`.
 Scripts can also be loaded from workspace-relative `.js` or `.mjs` files with
 `{ path: 'scripts/ptc/search.js' }`.
 
+## Workspace Backends And Direct Files
+
+The default workspace backend is the local filesystem rooted at the session
+workspace. SDK callers can pass the explicit typed backend now, using the same
+option surface that remote, browser, DFS, and container-backed workspaces will
+use:
+
+```js
+const { Agent, LocalWorkspaceBackend } = require('@a3s-lab/code')
+
+const agent = await Agent.create('agent.acl')
+const session = agent.session('/repo', {
+  workspaceBackend: new LocalWorkspaceBackend('/repo'),
+})
+
+await session.writeFile('notes.txt', 'one\ntwo\n')
+await session.readFile('notes.txt')
+await session.ls()
+await session.editFile('notes.txt', 'one', 'uno')
+await session.patchFile('notes.txt', '@@ -1,2 +1,2 @@\n uno\n-two\n+dos')
+```
+
 ## Planning Events
 
 Planning is automatic by default. Prefer the explicit tri-state

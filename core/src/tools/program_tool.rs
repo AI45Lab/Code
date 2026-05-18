@@ -189,10 +189,12 @@ async fn load_script_source(
         return Err("program script path must point to a .js or .mjs file".to_string());
     }
 
-    let resolved = ctx
-        .resolve_path(path)
+    let workspace_path = ctx
+        .resolve_workspace_path(path)
         .map_err(|err| format!("failed to resolve script path: {err}"))?;
-    tokio::fs::read_to_string(&resolved)
+    ctx.workspace_services
+        .fs()
+        .read_text(&workspace_path)
         .await
         .map_err(|err| format!("failed to read script path '{}': {err}", path))
 }

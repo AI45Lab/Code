@@ -14,7 +14,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 fi
 
 echo "==================================================================="
-echo "SDK Integration Test: ConfirmationInheritance"
+echo "SDK Integration Tests"
 echo "==================================================================="
 echo "Config: $CONFIG_FILE"
 echo ""
@@ -40,7 +40,11 @@ if [[ ! -f "index.js" ]]; then
   exit 1
 fi
 
+npm test
+npm run test:helpers
+npx tsc --noEmit -p examples/tsconfig.json
 node test_confirmation_inheritance.mjs
+node examples/basic/test_real_config_env_sdk.mjs
 echo ""
 
 # Test 2: Python SDK
@@ -56,7 +60,7 @@ if [[ -f ".venv/bin/python3" ]]; then
   echo "Using Python from venv: $PYTHON_BIN"
 fi
 
-if ! $PYTHON_BIN -c "import a3s_code" 2>/dev/null; then
+if ! $PYTHON_BIN -c "from a3s_code import Agent, LocalWorkspaceBackend" 2>/dev/null; then
   echo "WARNING: Python SDK not built. Building with maturin develop..."
   if ! command -v maturin &> /dev/null; then
     echo "ERROR: maturin not found. Install with: pip install maturin"
@@ -66,6 +70,7 @@ if ! $PYTHON_BIN -c "import a3s_code" 2>/dev/null; then
 fi
 
 $PYTHON_BIN test_confirmation_inheritance.py
+$PYTHON_BIN tests/real_config_env_sdk.py
 echo ""
 
 echo "==================================================================="

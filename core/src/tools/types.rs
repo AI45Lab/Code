@@ -37,6 +37,8 @@ pub struct ToolContext {
     pub sandbox: Option<std::sync::Arc<dyn crate::sandbox::BashSandbox>>,
     /// Optional command environment overrides for subprocess-based tools.
     pub command_env: Option<Arc<HashMap<String, String>>>,
+    /// Host-provided workspace capabilities used by built-in tools.
+    pub workspace_services: Arc<crate::workspace::WorkspaceServices>,
 }
 
 impl std::fmt::Debug for ToolContext {
@@ -45,6 +47,7 @@ impl std::fmt::Debug for ToolContext {
             .field("workspace", &self.workspace)
             .field("session_id", &self.session_id)
             .field("sandbox", &self.sandbox.is_some())
+            .field("workspace_services", &self.workspace_services)
             .finish()
     }
 }
@@ -62,6 +65,7 @@ impl ToolContext {
             search_config: None,
             sandbox: None,
             command_env: None,
+            workspace_services: crate::workspace::WorkspaceServices::local(workspace),
         }
     }
 
@@ -104,13 +108,50 @@ impl ToolContext {
         self
     }
 
-    /// Resolve path relative to workspace, ensuring it stays within sandbox
+    /// Set host-provided workspace capabilities for built-in tools.
+    pub fn with_workspace_services(
+        mut self,
+        services: Arc<crate::workspace::WorkspaceServices>,
+    ) -> Self {
+        self.workspace_services = services;
+        self
+    }
+
+    /// Normalize a user-supplied path through the configured workspace backend.
+    pub fn resolve_workspace_path(&self, path: &str) -> Result<crate::workspace::WorkspacePath> {
+        self.workspace_services.normalize_path(path)
+    }
+
+    /// Resolve path relative to workspace, ensuring it stays within sandbox.
+    ///
+    /// Deprecated: returns a host-filesystem `PathBuf` that is meaningless for
+    /// virtual / DFS / browser workspace backends. New code should call
+    /// [`Self::resolve_workspace_path`] and route I/O through
+    /// `workspace_services.fs()` instead.
+    #[deprecated(
+        note = "Use resolve_workspace_path() and route I/O through workspace_services.fs() for non-local backends"
+    )]
     pub fn resolve_path(&self, path: &str) -> Result<PathBuf> {
+        if self.workspace_services.local_root().is_none() {
+            anyhow::bail!(
+                "resolve_path is only valid for local workspaces; this session uses a non-local workspace backend, call resolve_workspace_path() instead"
+            );
+        }
         a3s_common::tools::resolve_path(&self.workspace, path).map_err(|e| anyhow::anyhow!("{}", e))
     }
 
-    /// Resolve path for writing (allows non-existent files)
+    /// Resolve path for writing (allows non-existent files).
+    ///
+    /// Deprecated: see [`Self::resolve_path`].
+    #[deprecated(
+        note = "Use resolve_workspace_path() and route I/O through workspace_services.fs() for non-local backends"
+    )]
     pub fn resolve_path_for_write(&self, path: &str) -> Result<PathBuf> {
+        if self.workspace_services.local_root().is_none() {
+            anyhow::bail!(
+                "resolve_path_for_write is only valid for local workspaces; this session uses a non-local workspace backend, call resolve_workspace_path() instead"
+            );
+        }
         a3s_common::tools::resolve_path_for_write(&self.workspace, path)
             .map_err(|e| anyhow::anyhow!("{}", e))
     }
@@ -192,6 +233,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(deprecated)]
     fn test_tool_context_resolve_path() {
         let temp_dir = tempfile::tempdir().unwrap();
         let ctx = ToolContext::new(temp_dir.path().to_path_buf());

@@ -10,8 +10,8 @@
 //! ```
 
 mod artifacts;
-mod builtin;
-mod process;
+pub(crate) mod builtin;
+pub(crate) mod process;
 mod program_tool;
 mod registry;
 mod selector;
@@ -209,45 +209,71 @@ pub struct ToolExecutor {
     registry: Arc<ToolRegistry>,
     file_history: Arc<FileHistory>,
     command_env: Option<Arc<HashMap<String, String>>>,
+    workspace_services: Arc<crate::workspace::WorkspaceServices>,
 }
 
 impl ToolExecutor {
     pub fn new(workspace: String) -> Self {
-        Self::new_with_options(workspace, None, ArtifactStoreLimits::default())
-    }
-
-    pub fn new_with_command_env(workspace: String, command_env: HashMap<String, String>) -> Self {
-        Self::new_with_options(workspace, Some(command_env), ArtifactStoreLimits::default())
+        let workspace_services =
+            crate::workspace::WorkspaceServices::local(PathBuf::from(&workspace));
+        Self::build(
+            workspace,
+            None,
+            ArtifactStoreLimits::default(),
+            workspace_services,
+        )
     }
 
     pub fn new_with_artifact_limits(
         workspace: String,
         artifact_limits: ArtifactStoreLimits,
     ) -> Self {
-        Self::new_with_options(workspace, None, artifact_limits)
+        let workspace_services =
+            crate::workspace::WorkspaceServices::local(PathBuf::from(&workspace));
+        Self::build(workspace, None, artifact_limits, workspace_services)
     }
 
-    pub fn new_with_command_env_and_artifact_limits(
+    pub fn new_with_workspace_services(
         workspace: String,
-        command_env: HashMap<String, String>,
+        workspace_services: Arc<crate::workspace::WorkspaceServices>,
+    ) -> Self {
+        Self::build(
+            workspace,
+            None,
+            ArtifactStoreLimits::default(),
+            workspace_services,
+        )
+    }
+
+    pub fn new_with_workspace_services_and_artifact_limits(
+        workspace: String,
+        workspace_services: Arc<crate::workspace::WorkspaceServices>,
         artifact_limits: ArtifactStoreLimits,
     ) -> Self {
-        Self::new_with_options(workspace, Some(command_env), artifact_limits)
+        Self::build(workspace, None, artifact_limits, workspace_services)
     }
 
-    fn new_with_options(
+    fn build(
         workspace: String,
         command_env: Option<HashMap<String, String>>,
         artifact_limits: ArtifactStoreLimits,
+        workspace_services: Arc<crate::workspace::WorkspaceServices>,
     ) -> Self {
         let workspace_path = PathBuf::from(&workspace);
-        let registry = Arc::new(ToolRegistry::with_artifact_limits(
+        let command_env = command_env.map(Arc::new);
+        let registry = Arc::new(ToolRegistry::with_artifact_limits_and_workspace_services(
             workspace_path.clone(),
             artifact_limits,
+            Arc::clone(&workspace_services),
         ));
+        if let Some(env) = command_env.clone() {
+            registry.set_command_env(env);
+        }
 
-        // Register native Rust built-in tools
-        builtin::register_builtins(&registry);
+        // Register native Rust built-in tools — only those whose required
+        // workspace capability is available, so the model never sees a tool
+        // the backend cannot service.
+        builtin::register_builtins(&registry, &workspace_services.capabilities());
         // Batch tool requires Arc<ToolRegistry>, registered separately
         builtin::register_batch(&registry);
         builtin::register_program(&registry);
@@ -256,7 +282,8 @@ impl ToolExecutor {
             workspace: workspace_path,
             registry,
             file_history: Arc::new(FileHistory::new(500)),
-            command_env: command_env.map(Arc::new),
+            command_env,
+            workspace_services,
         }
     }
 
@@ -273,51 +300,14 @@ impl ToolExecutor {
 
         if let Some(field) = path_field {
             if let Some(path_str) = args.get(field).and_then(|v| v.as_str()) {
-                let target = if std::path::Path::new(path_str).is_absolute() {
-                    std::path::PathBuf::from(path_str)
-                } else {
-                    ctx.workspace.join(path_str)
-                };
-
-                // Canonicalize workspace first — fail closed if it can't be resolved
-                let canonical_workspace = ctx.workspace.canonicalize().map_err(|e| {
+                ctx.resolve_workspace_path(path_str).map_err(|e| {
                     anyhow::anyhow!(
-                        "Workspace boundary check failed: cannot canonicalize workspace '{}': {}",
-                        ctx.workspace.display(),
+                        "Workspace boundary check failed for tool '{}' path '{}': {}",
+                        name,
+                        path_str,
                         e
                     )
                 })?;
-
-                // Try to canonicalize target; fall back to parent directory for new files
-                let canonical_target = target.canonicalize().or_else(|_| {
-                    target
-                        .parent()
-                        .and_then(|p| p.canonicalize().ok())
-                        .ok_or_else(|| {
-                            std::io::Error::new(std::io::ErrorKind::NotFound, "parent not found")
-                        })
-                });
-
-                match canonical_target {
-                    Ok(canonical) => {
-                        if !canonical.starts_with(&canonical_workspace) {
-                            anyhow::bail!(
-                                "Workspace boundary violation: tool '{}' path '{}' escapes workspace '{}'",
-                                name,
-                                path_str,
-                                ctx.workspace.display()
-                            );
-                        }
-                    }
-                    Err(_) => {
-                        // Fail closed: if we can't resolve the target path, deny the operation
-                        anyhow::bail!(
-                            "Workspace boundary check failed: cannot resolve path '{}' for tool '{}'",
-                            path_str,
-                            name
-                        );
-                    }
-                }
             }
         }
 
@@ -375,16 +365,32 @@ impl ToolExecutor {
     }
 
     fn capture_snapshot(&self, name: &str, args: &serde_json::Value) {
+        let Some(local_root) = self.workspace_services.local_root() else {
+            return;
+        };
+
         if let Some(file_path) = file_history::extract_file_path(name, args) {
-            let resolved = self.workspace.join(&file_path);
-            let path_to_read = if resolved.exists() {
-                resolved
-            } else if std::path::Path::new(&file_path).exists() {
-                std::path::PathBuf::from(&file_path)
+            let workspace_path = match self.workspace_services.normalize_path(&file_path) {
+                Ok(path) => path,
+                Err(e) => {
+                    tracing::warn!(
+                        "Skipping file snapshot for invalid path {}: {}",
+                        file_path,
+                        e
+                    );
+                    return;
+                }
+            };
+            let path_to_read = if workspace_path.is_root() {
+                local_root.to_path_buf()
             } else {
+                local_root.join(workspace_path.as_str())
+            };
+
+            if !path_to_read.exists() {
                 self.file_history.save_snapshot(&file_path, "", name);
                 return;
-            };
+            }
 
             match std::fs::read_to_string(&path_to_read) {
                 Ok(content) => {
@@ -404,9 +410,14 @@ impl ToolExecutor {
     }
 
     pub async fn execute(&self, name: &str, args: &serde_json::Value) -> Result<ToolResult> {
+        let ctx = self.registry.context();
+        if let Err(e) = Self::check_workspace_boundary(name, args, &ctx) {
+            return Ok(ToolResult::error(name, e.to_string()));
+        }
+
         tracing::info!("Executing tool: {} with args: {}", name, args);
         self.capture_snapshot(name, args);
-        let mut result = self.registry.execute(name, args).await;
+        let mut result = self.registry.execute_with_context(name, args, &ctx).await;
         if let Ok(ref mut r) = result {
             self.attach_diff_metadata(name, args, r);
         }
@@ -458,7 +469,13 @@ impl ToolExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workspace::{
+        CommandOutput, CommandRequest, WorkspaceCommandRunner, WorkspaceDirEntry,
+        WorkspaceFileSystem, WorkspaceFileType, WorkspacePath, WorkspaceRef, WorkspaceServices,
+        WorkspaceWriteOutcome,
+    };
     use async_trait::async_trait;
+    use std::sync::RwLock;
 
     struct LargeArtifactTool;
 
@@ -532,6 +549,89 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct MemoryWorkspaceFs {
+        files: RwLock<HashMap<String, String>>,
+    }
+
+    impl MemoryWorkspaceFs {
+        fn insert(&self, path: &str, content: &str) {
+            self.files
+                .write()
+                .unwrap()
+                .insert(path.to_string(), content.to_string());
+        }
+
+        fn get(&self, path: &str) -> Option<String> {
+            self.files.read().unwrap().get(path).cloned()
+        }
+    }
+
+    #[async_trait]
+    impl WorkspaceFileSystem for MemoryWorkspaceFs {
+        async fn read_text(&self, path: &WorkspacePath) -> Result<String> {
+            self.files
+                .read()
+                .unwrap()
+                .get(path.as_str())
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("missing file: {}", path.as_str()))
+        }
+
+        async fn write_text(
+            &self,
+            path: &WorkspacePath,
+            content: &str,
+        ) -> Result<WorkspaceWriteOutcome> {
+            self.insert(path.as_str(), content);
+            Ok(WorkspaceWriteOutcome {
+                bytes: content.len(),
+                lines: content.lines().count(),
+            })
+        }
+
+        async fn list_dir(&self, path: &WorkspacePath) -> Result<Vec<WorkspaceDirEntry>> {
+            let prefix = if path.is_root() {
+                String::new()
+            } else {
+                format!("{}/", path.as_str())
+            };
+            let files = self.files.read().unwrap();
+            let mut entries = Vec::new();
+            for name in files.keys() {
+                if !name.starts_with(&prefix) {
+                    continue;
+                }
+                let remaining = &name[prefix.len()..];
+                if remaining.is_empty() || remaining.contains('/') {
+                    continue;
+                }
+                entries.push(WorkspaceDirEntry {
+                    name: remaining.to_string(),
+                    kind: WorkspaceFileType::File,
+                    size: files
+                        .get(name)
+                        .map(|content| content.len() as u64)
+                        .unwrap_or(0),
+                });
+            }
+            Ok(entries)
+        }
+    }
+
+    struct MockCommandRunner;
+
+    #[async_trait]
+    impl WorkspaceCommandRunner for MockCommandRunner {
+        async fn exec(&self, request: CommandRequest) -> Result<CommandOutput> {
+            Ok(CommandOutput {
+                output: format!("remote: {}\n", request.command),
+                exit_code: 0,
+                timed_out: false,
+            })
+        }
+    }
+
     #[tokio::test]
     async fn test_tool_executor_creation() {
         let executor = ToolExecutor::new("/tmp".to_string());
@@ -566,6 +666,142 @@ mod tests {
         assert!(definitions.iter().any(|t| t.name == "web_fetch"));
         assert!(definitions.iter().any(|t| t.name == "web_search"));
         assert!(definitions.iter().any(|t| t.name == "batch"));
+    }
+
+    #[tokio::test]
+    async fn test_builtin_file_tools_use_workspace_services() {
+        let fs = Arc::new(MemoryWorkspaceFs::default());
+        fs.insert("remote.txt", "first\nsecond\n");
+        let services = WorkspaceServices::builder(
+            WorkspaceRef::new("browser-workspace", "browser://workspace"),
+            fs.clone(),
+        )
+        .build();
+        let executor = ToolExecutor::new_with_workspace_services_and_artifact_limits(
+            "/server/local-placeholder".to_string(),
+            services,
+            ArtifactStoreLimits::default(),
+        );
+        let definitions = executor.definitions();
+        assert!(definitions.iter().any(|tool| tool.name == "read"));
+        assert!(definitions.iter().any(|tool| tool.name == "write"));
+        assert!(definitions.iter().any(|tool| tool.name == "ls"));
+        assert!(!definitions.iter().any(|tool| tool.name == "bash"));
+        assert!(!definitions.iter().any(|tool| tool.name == "grep"));
+        assert!(definitions.iter().any(|tool| tool.name == "edit"));
+        assert!(definitions.iter().any(|tool| tool.name == "patch"));
+
+        let read = executor
+            .execute("read", &serde_json::json!({"file_path": "remote.txt"}))
+            .await
+            .unwrap();
+        assert_eq!(read.exit_code, 0);
+        assert!(read.output.contains("first"));
+
+        let write = executor
+            .execute(
+                "write",
+                &serde_json::json!({"file_path": "created.txt", "content": "remote write\n"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(write.exit_code, 0);
+        assert_eq!(fs.get("created.txt").unwrap(), "remote write\n");
+
+        let ls = executor
+            .execute("ls", &serde_json::json!({}))
+            .await
+            .unwrap();
+        assert_eq!(ls.exit_code, 0);
+        assert!(ls.output.contains("created.txt"));
+        assert!(ls.output.contains("remote.txt"));
+    }
+
+    #[tokio::test]
+    async fn test_bash_uses_workspace_command_runner() {
+        let fs = Arc::new(MemoryWorkspaceFs::default());
+        let fs_backend: Arc<dyn WorkspaceFileSystem> = fs;
+        let services = WorkspaceServices::builder(
+            WorkspaceRef::new("remote-workspace", "remote://workspace"),
+            fs_backend,
+        )
+        .command_runner(Arc::new(MockCommandRunner))
+        .build();
+        let executor = ToolExecutor::new_with_workspace_services_and_artifact_limits(
+            "/server/local-placeholder".to_string(),
+            services,
+            ArtifactStoreLimits::default(),
+        );
+        assert!(executor
+            .definitions()
+            .iter()
+            .any(|tool| tool.name == "bash"));
+
+        let result = executor
+            .execute("bash", &serde_json::json!({"command": "pwd"}))
+            .await
+            .unwrap();
+
+        assert_eq!(result.exit_code, 0);
+        assert_eq!(result.output, "remote: pwd\n");
+    }
+
+    #[tokio::test]
+    async fn test_command_env_is_available_on_default_context() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut env = HashMap::new();
+        env.insert(
+            "A3S_COMMAND_ENV_TEST".to_string(),
+            "registry-env".to_string(),
+        );
+
+        let executor = ToolExecutor::new(temp.path().to_string_lossy().to_string());
+        executor.registry().set_command_env(Arc::new(env));
+        let context = executor.registry().context();
+        assert_eq!(
+            context
+                .command_env
+                .as_ref()
+                .and_then(|env| env.get("A3S_COMMAND_ENV_TEST"))
+                .map(String::as_str),
+            Some("registry-env")
+        );
+
+        #[cfg(windows)]
+        let command = "Write-Output $env:A3S_COMMAND_ENV_TEST";
+        #[cfg(not(windows))]
+        let command = "printf '%s' \"$A3S_COMMAND_ENV_TEST\"";
+
+        let result = executor
+            .execute("bash", &serde_json::json!({ "command": command }))
+            .await
+            .unwrap();
+
+        assert_eq!(result.exit_code, 0, "{}", result.output);
+        assert!(result.output.contains("registry-env"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_applies_workspace_boundary_for_default_context() {
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "secret").unwrap();
+
+        let executor = ToolExecutor::new(workspace.path().to_string_lossy().to_string());
+        let result = executor
+            .execute(
+                "grep",
+                &serde_json::json!({
+                    "pattern": "secret",
+                    "path": outside.path().to_string_lossy()
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.exit_code, 1);
+        assert!(result.output.contains("Workspace boundary"));
+        assert!(result.output.contains("escapes workspace"));
     }
 
     #[test]
@@ -813,15 +1049,7 @@ mod tests {
         std::fs::write(&file, "original\n").unwrap();
 
         let executor = ToolExecutor::new(canonical_dir.to_str().unwrap().to_string());
-        let ctx = ToolContext {
-            workspace: canonical_dir.clone(),
-            session_id: None,
-            event_tx: None,
-            agent_event_tx: None,
-            search_config: None,
-            sandbox: None,
-            command_env: None,
-        };
+        let ctx = ToolContext::new(canonical_dir.clone());
         let args = serde_json::json!({
             "file_path": "ctx.txt",
             "content": "updated\n"

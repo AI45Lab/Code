@@ -231,15 +231,7 @@ mod tests {
     }
 
     fn make_ctx() -> ToolContext {
-        ToolContext {
-            workspace: PathBuf::from("/tmp"),
-            session_id: None,
-            event_tx: None,
-            agent_event_tx: None,
-            search_config: None,
-            sandbox: None,
-            command_env: None,
-        }
+        ToolContext::new(PathBuf::from("/tmp"))
     }
 
     #[test]

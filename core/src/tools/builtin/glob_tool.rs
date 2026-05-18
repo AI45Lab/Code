@@ -1,9 +1,9 @@
 //! Glob tool - Find files matching a glob pattern
 
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
+use crate::workspace::WorkspaceGlobRequest;
 use anyhow::Result;
 use async_trait::async_trait;
-use std::path::PathBuf;
 
 pub struct GlobTool;
 
@@ -50,24 +50,28 @@ impl Tool for GlobTool {
             None => return Ok(ToolOutput::error("pattern parameter is required")),
         };
 
-        let base_dir = match args.get("path").and_then(|v| v.as_str()) {
-            Some(p) => {
-                if std::path::Path::new(p).is_absolute() {
-                    PathBuf::from(p)
-                } else {
-                    ctx.workspace.join(p)
-                }
-            }
-            None => ctx.workspace.clone(),
+        let path_str = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+        let base = match ctx.resolve_workspace_path(path_str) {
+            Ok(path) => path,
+            Err(e) => return Ok(ToolOutput::error(format!("Failed to resolve path: {}", e))),
         };
 
-        // Build the full glob pattern
-        let full_pattern = base_dir.join(pattern);
-        // Normalize to forward slashes — glob crate requires '/' on all platforms
-        let full_pattern_str = full_pattern.to_string_lossy().replace('\\', "/");
+        let Some(search) = ctx.workspace_services.search() else {
+            return Ok(ToolOutput::error(
+                "glob is not available: this workspace backend did not provide search",
+            ));
+        };
 
-        let entries = match glob::glob(&full_pattern_str) {
-            Ok(paths) => paths,
+        let request = WorkspaceGlobRequest {
+            base,
+            pattern: pattern.to_string(),
+        };
+        let result = match ctx
+            .workspace_services
+            .run_with_timeout("glob", async move { search.glob(request).await })
+            .await
+        {
+            Ok(result) => result,
             Err(e) => {
                 return Ok(ToolOutput::error(format!(
                     "Invalid glob pattern '{}': {}",
@@ -75,26 +79,11 @@ impl Tool for GlobTool {
                 )))
             }
         };
-
-        let mut matches: Vec<String> = Vec::new();
-        for entry in entries {
-            match entry {
-                Ok(path) => {
-                    // Show path relative to workspace if possible, always use forward slashes
-                    let display = path
-                        .strip_prefix(&ctx.workspace)
-                        .unwrap_or(&path)
-                        .to_string_lossy()
-                        .replace('\\', "/");
-                    matches.push(display);
-                }
-                Err(e) => {
-                    tracing::warn!("Glob entry error: {}", e);
-                }
-            }
-        }
-
-        matches.sort();
+        let matches: Vec<String> = result
+            .matches
+            .into_iter()
+            .map(|path| path.as_str().to_string())
+            .collect();
 
         if matches.is_empty() {
             Ok(ToolOutput::success(format!(
@@ -113,6 +102,7 @@ impl Tool for GlobTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[tokio::test]
     async fn test_glob_find_files() {

@@ -53,6 +53,98 @@ struct CapturingContextProvider {
     session_ids: std::sync::Mutex<Vec<Option<String>>>,
 }
 
+#[derive(Default)]
+struct TestWorkspaceFs {
+    files: std::sync::RwLock<std::collections::HashMap<String, String>>,
+}
+
+impl TestWorkspaceFs {
+    fn insert(&self, path: &str, content: &str) {
+        self.files
+            .write()
+            .unwrap()
+            .insert(path.to_string(), content.to_string());
+    }
+
+    fn read_raw(&self, path: &str) -> Option<String> {
+        self.files.read().unwrap().get(path).cloned()
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::workspace::WorkspaceFileSystem for TestWorkspaceFs {
+    async fn read_text(&self, path: &crate::workspace::WorkspacePath) -> anyhow::Result<String> {
+        self.files
+            .read()
+            .unwrap()
+            .get(path.as_str())
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("missing test workspace file: {}", path.as_str()))
+    }
+
+    async fn write_text(
+        &self,
+        path: &crate::workspace::WorkspacePath,
+        content: &str,
+    ) -> anyhow::Result<crate::workspace::WorkspaceWriteOutcome> {
+        self.insert(path.as_str(), content);
+        Ok(crate::workspace::WorkspaceWriteOutcome {
+            bytes: content.len(),
+            lines: content.lines().count(),
+        })
+    }
+
+    async fn list_dir(
+        &self,
+        path: &crate::workspace::WorkspacePath,
+    ) -> anyhow::Result<Vec<crate::workspace::WorkspaceDirEntry>> {
+        let prefix = if path.is_root() {
+            String::new()
+        } else {
+            format!("{}/", path.as_str())
+        };
+        let files = self.files.read().unwrap();
+        let mut entries = Vec::new();
+
+        for (file_path, content) in files.iter() {
+            if !file_path.starts_with(&prefix) {
+                continue;
+            }
+            let remaining = &file_path[prefix.len()..];
+            if remaining.is_empty() || remaining.contains('/') {
+                continue;
+            }
+            entries.push(crate::workspace::WorkspaceDirEntry {
+                name: remaining.to_string(),
+                kind: crate::workspace::WorkspaceFileType::File,
+                size: content.len() as u64,
+            });
+        }
+
+        Ok(entries)
+    }
+}
+
+#[derive(Default)]
+struct TestWorkspaceRunner {
+    commands: std::sync::RwLock<Vec<String>>,
+}
+
+#[async_trait::async_trait]
+impl crate::workspace::WorkspaceCommandRunner for TestWorkspaceRunner {
+    async fn exec(
+        &self,
+        request: crate::workspace::CommandRequest,
+    ) -> anyhow::Result<crate::workspace::CommandOutput> {
+        self.commands.write().unwrap().push(request.command.clone());
+        Ok(crate::workspace::CommandOutput {
+            output: format!("session runner: {}\n", request.command),
+            exit_code: 0,
+            timed_out: false,
+        })
+    }
+}
+
 #[async_trait::async_trait]
 impl crate::context::ContextProvider for CapturingContextProvider {
     fn name(&self) -> &str {
@@ -248,6 +340,69 @@ async fn test_session_default() {
     assert!(session.is_ok());
     let debug = format!("{:?}", session.unwrap());
     assert!(debug.contains("AgentSession"));
+}
+
+#[tokio::test]
+async fn test_session_uses_workspace_backend_for_direct_tools() {
+    let fs = Arc::new(TestWorkspaceFs::default());
+    fs.insert("app.txt", "hello from backend\n");
+    let fs_backend: Arc<dyn crate::workspace::WorkspaceFileSystem> = fs.clone();
+    let runner = Arc::new(TestWorkspaceRunner::default());
+    let runner_backend: Arc<dyn crate::workspace::WorkspaceCommandRunner> = runner.clone();
+    let services = crate::workspace::WorkspaceServices::builder(
+        crate::workspace::WorkspaceRef::new("session-workspace", "session://workspace"),
+        fs_backend,
+    )
+    .command_runner(runner_backend)
+    .build();
+
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session = agent
+        .session(
+            "/server/local-placeholder",
+            Some(SessionOptions::new().with_workspace_backend(services)),
+        )
+        .unwrap();
+
+    let tool_names = session.tool_names();
+    assert!(tool_names.contains(&"read".to_string()));
+    assert!(tool_names.contains(&"write".to_string()));
+    assert!(tool_names.contains(&"ls".to_string()));
+    assert!(tool_names.contains(&"bash".to_string()));
+    assert!(!tool_names.contains(&"grep".to_string()));
+    assert!(!tool_names.contains(&"glob".to_string()));
+    assert!(!tool_names.contains(&"git".to_string()));
+
+    let read = session.read_file("app.txt").await.unwrap();
+    assert!(read.contains("hello from backend"));
+
+    let write = session
+        .write_file("created.txt", "one\ntwo\n")
+        .await
+        .unwrap();
+    assert_eq!(write.exit_code, 0, "{}", write.output);
+    assert_eq!(fs.read_raw("created.txt").as_deref(), Some("one\ntwo\n"));
+
+    let listing = session.ls(None).await.unwrap();
+    assert_eq!(listing.exit_code, 0, "{}", listing.output);
+    assert!(listing.output.contains("created.txt"));
+
+    let edit = session
+        .edit_file("created.txt", "one", "uno", false)
+        .await
+        .unwrap();
+    assert_eq!(edit.exit_code, 0, "{}", edit.output);
+    assert_eq!(fs.read_raw("created.txt").as_deref(), Some("uno\ntwo\n"));
+
+    let patch = session
+        .patch_file("created.txt", "@@ -1,2 +1,2 @@\n uno\n-two\n+dos")
+        .await
+        .unwrap();
+    assert_eq!(patch.exit_code, 0, "{}", patch.output);
+    assert_eq!(fs.read_raw("created.txt").as_deref(), Some("uno\ndos\n"));
+
+    let bash = session.bash("pwd").await.unwrap();
+    assert_eq!(bash, "session runner: pwd\n");
 }
 
 #[tokio::test]

@@ -43,6 +43,7 @@ impl std::fmt::Debug for SessionOptions {
             .field("tool_timeout_ms", &self.tool_timeout_ms)
             .field("circuit_breaker_threshold", &self.circuit_breaker_threshold)
             .field("sandbox_handle", &self.sandbox_handle.is_some())
+            .field("workspace_services", &self.workspace_services.is_some())
             .field("auto_compact", &self.auto_compact)
             .field("auto_compact_threshold", &self.auto_compact_threshold)
             .field("continuation_enabled", &self.continuation_enabled)
@@ -332,6 +333,19 @@ impl SessionOptions {
     /// [`BashSandbox`]: crate::sandbox::BashSandbox
     pub fn with_sandbox_handle(mut self, handle: Arc<dyn crate::sandbox::BashSandbox>) -> Self {
         self.sandbox_handle = Some(handle);
+        self
+    }
+
+    /// Provide a workspace backend for this session.
+    ///
+    /// Built-in tools keep their stable names and schemas, while their backing
+    /// implementation can target a DFS, browser workspace, remote runner, or
+    /// any other host-provided backend.
+    pub fn with_workspace_backend(
+        mut self,
+        services: Arc<crate::workspace::WorkspaceServices>,
+    ) -> Self {
+        self.workspace_services = Some(services);
         self
     }
 

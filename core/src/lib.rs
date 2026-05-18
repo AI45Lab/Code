@@ -113,6 +113,7 @@ pub(crate) mod tool_confirmation;
 pub mod tools;
 pub mod trace;
 pub mod verification;
+pub mod workspace;
 
 // Re-export key types at crate root for ergonomic usage
 pub use agent::{AgentEvent, AgentResult};
@@ -132,4 +133,17 @@ pub use run::{
 pub use subagent::{
     AgentDefinition, AgentRegistry, CattleAgentKind, CattleAgentSpec, ConfirmationInheritance,
     WorkerAgentKind, WorkerAgentSpec,
+};
+pub use workspace::{
+    CommandOutput, CommandOutputObserver, CommandRequest, LocalWorkspaceBackend,
+    VirtualPathResolver, WorkspaceCapabilities, WorkspaceCommandRunner, WorkspaceDirEntry,
+    WorkspaceFileSystem, WorkspaceFileType, WorkspaceGit, WorkspaceGitBranch,
+    WorkspaceGitCheckoutOutput, WorkspaceGitCheckoutRequest, WorkspaceGitCommit,
+    WorkspaceGitCreateBranchRequest, WorkspaceGitCreateWorktreeRequest, WorkspaceGitDiffRequest,
+    WorkspaceGitRemote, WorkspaceGitRemoveWorktreeRequest, WorkspaceGitStash,
+    WorkspaceGitStashProvider, WorkspaceGitStashRequest, WorkspaceGitStatus, WorkspaceGitWorktree,
+    WorkspaceGitWorktreeMutation, WorkspaceGitWorktreeProvider, WorkspaceGlobRequest,
+    WorkspaceGlobResult, WorkspaceGrepRequest, WorkspaceGrepResult, WorkspacePath,
+    WorkspacePathResolver, WorkspaceRef, WorkspaceSearch, WorkspaceServices,
+    WorkspaceServicesBuilder, WorkspaceWriteOutcome,
 };

@@ -1,7 +1,7 @@
 //! Process output reading utility
 
-use super::types::{ToolEventSender, ToolStreamEvent};
 use super::MAX_OUTPUT_SIZE;
+use crate::workspace::CommandOutputObserver;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::BufReader;
 use tokio::process::Child;
@@ -9,7 +9,7 @@ use tokio::process::Child;
 pub(crate) async fn read_process_output(
     child: &mut Child,
     timeout_secs: u64,
-    event_tx: Option<&ToolEventSender>,
+    observer: Option<&dyn CommandOutputObserver>,
 ) -> (String, bool) {
     let stdout = match child.stdout.take() {
         Some(s) => s,
@@ -47,10 +47,10 @@ pub(crate) async fn read_process_output(
                                 output.push('\n');
                                 total_size += line.len() + 1;
                             }
-                            if let Some(tx) = event_tx {
+                            if let Some(obs) = observer {
                                 let mut delta = line;
                                 delta.push('\n');
-                                tx.send(ToolStreamEvent::OutputDelta(delta)).await.ok();
+                                obs.on_output_delta(&delta).await;
                             }
                         }
                         Ok(None) => stdout_done = true,
@@ -65,10 +65,10 @@ pub(crate) async fn read_process_output(
                                 output.push('\n');
                                 total_size += line.len() + 1;
                             }
-                            if let Some(tx) = event_tx {
+                            if let Some(obs) = observer {
                                 let mut delta = line;
                                 delta.push('\n');
-                                tx.send(ToolStreamEvent::OutputDelta(delta)).await.ok();
+                                obs.on_output_delta(&delta).await;
                             }
                         }
                         Ok(None) => stderr_done = true,

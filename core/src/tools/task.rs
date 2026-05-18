@@ -206,7 +206,19 @@ impl TaskExecutor {
 
         // Build a child ToolExecutor. Task tools are intentionally omitted
         // here to prevent unlimited delegation nesting.
-        let child_executor = crate::tools::ToolExecutor::new(self.workspace.clone());
+        let child_executor = if let Some(ref parent_ctx) = self.parent_context {
+            if let Some(ref services) = parent_ctx.workspace_services {
+                crate::tools::ToolExecutor::new_with_workspace_services_and_artifact_limits(
+                    self.workspace.clone(),
+                    Arc::clone(services),
+                    crate::tools::ArtifactStoreLimits::default(),
+                )
+            } else {
+                crate::tools::ToolExecutor::new(self.workspace.clone())
+            }
+        } else {
+            crate::tools::ToolExecutor::new(self.workspace.clone())
+        };
 
         // Register MCP tools so child agents can access MCP servers.
         if let Some(ref mcp) = self.mcp_manager {
@@ -241,8 +253,13 @@ impl TaskExecutor {
             child_config.max_tool_rounds = max_steps;
         }
 
-        let tool_context =
+        let mut tool_context =
             ToolContext::new(PathBuf::from(&self.workspace)).with_session_id(session_id.clone());
+        if let Some(ref parent_ctx) = self.parent_context {
+            if let Some(ref services) = parent_ctx.workspace_services {
+                tool_context = tool_context.with_workspace_services(Arc::clone(services));
+            }
+        }
 
         let agent_loop = AgentLoop::new(
             Arc::clone(&self.llm_client),

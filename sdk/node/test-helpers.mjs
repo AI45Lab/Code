@@ -3,6 +3,7 @@ import mod from './index.js'
 
 assert.equal(typeof mod.builtinSkills, 'function')
 assert.equal(typeof mod.formatVerificationSummary, 'function')
+assert.equal(typeof mod.LocalWorkspaceBackend, 'function')
 
 const skills = mod.builtinSkills()
 assert.equal(Array.isArray(skills), true)

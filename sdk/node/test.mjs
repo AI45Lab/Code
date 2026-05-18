@@ -8,6 +8,7 @@ const requiredExports = [
   'Agent',
   'Session',
   'EventStream',
+  'LocalWorkspaceBackend',
   'builtinSkills',
 ]
 
@@ -35,7 +36,27 @@ providers "anthropic" {
 `.trim()
 
 const agent = await mod.Agent.create(inlineConfig)
-const session = agent.session(workspace, { permissionPolicy: { defaultDecision: 'allow' } })
+const session = agent.session(workspace, {
+  permissionPolicy: { defaultDecision: 'allow' },
+  workspaceBackend: new mod.LocalWorkspaceBackend(workspace),
+})
+
+const write = await session.writeFile('notes.txt', 'one\ntwo\n')
+assert.equal(write.exitCode, 0, write.output)
+
+const read = await session.readFile('notes.txt')
+assert.equal(read.includes('one'), true, 'readFile should read from workspace backend')
+
+const listing = await session.ls()
+assert.equal(listing.exitCode, 0, listing.output)
+assert.equal(listing.output.includes('notes.txt'), true, 'ls should list workspace files')
+
+const edit = await session.editFile('notes.txt', 'one', 'uno')
+assert.equal(edit.exitCode, 0, edit.output)
+
+const patch = await session.patchFile('notes.txt', '@@ -1,2 +1,2 @@\n uno\n-two\n+dos')
+assert.equal(patch.exitCode, 0, patch.output)
+assert.equal(fs.readFileSync(path.join(workspace, 'notes.txt'), 'utf8'), 'uno\ndos\n')
 
 const commands = session.listCommands()
 assert.equal(Array.isArray(commands), true, 'listCommands() should return an array')

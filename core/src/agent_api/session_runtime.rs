@@ -105,12 +105,12 @@ fn build_command_queue(
 
 fn build_tool_context(
     code_config: &CodeConfig,
-    workspace: &Path,
+    _workspace: &Path,
     opts: &SessionOptions,
     tool_executor: Arc<ToolExecutor>,
     agent_event_tx: broadcast::Sender<AgentEvent>,
 ) -> ToolContext {
-    let mut tool_context = ToolContext::new(workspace.to_path_buf());
+    let mut tool_context = tool_executor.registry().context();
     if let Some(ref search_config) = code_config.search {
         tool_context = tool_context.with_search_config(search_config.clone());
     }

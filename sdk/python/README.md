@@ -60,6 +60,7 @@ from a3s_code import (
     FileMemoryStore,
     FileSessionStore,
     HttpTransport,
+    LocalWorkspaceBackend,
 )
 
 agent = Agent.create("agent.acl")
@@ -96,7 +97,14 @@ if runs:
     session.cancel_run(runs[-1]["id"])
 
 # Direct tools (bypass LLM)
+opts = SessionOptions()
+opts.workspace_backend = LocalWorkspaceBackend("/my-project")
+session = agent.session("/my-project", opts)
+session.write_file("notes.txt", "one\ntwo\n")
 session.read_file("src/main.py")
+session.ls()
+session.edit_file("notes.txt", "one", "uno")
+session.patch_file("notes.txt", "@@ -1,2 +1,2 @@\n uno\n-two\n+dos")
 session.bash("pytest")
 session.glob("**/*.py")
 session.grep("TODO")

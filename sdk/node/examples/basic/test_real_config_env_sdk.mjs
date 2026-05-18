@@ -8,12 +8,12 @@
 
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const require = createRequire(import.meta.url);
-const { Agent } = require('@a3s-lab/code');
+const { Agent, LocalWorkspaceBackend } = require('@a3s-lab/code');
 const timeoutMs = Number(process.env.A3S_CODE_SDK_REAL_TIMEOUT_MS || '180000');
 const runFullAgentSmoke = process.env.A3S_CODE_SDK_REAL_AGENT_SMOKE !== '0';
 const runChildAgentSmoke = process.env.A3S_CODE_SDK_REAL_CHILD_AGENT_SMOKE === '1';
@@ -54,6 +54,7 @@ const session = agent.session(workspace, {
   permissionPolicy: { defaultDecision: 'allow' },
   maxParseRetries: 1,
   circuitBreakerThreshold: 1,
+  workspaceBackend: new LocalWorkspaceBackend(workspace),
 });
 
 const toolNames = await step('toolNames', () => session.toolNames());
@@ -67,6 +68,20 @@ assert.ok(
   toolDefinitions.some((tool) => tool.name === 'program'),
   'program schema should be visible through toolDefinitions()',
 );
+
+const writeResult = await step('writeFile', () => session.writeFile('notes.txt', 'one\ntwo\n'));
+assert.equal(writeResult.exitCode, 0, writeResult.output);
+assert.match(await step('readFile', () => session.readFile('notes.txt')), /one/);
+const lsResult = await step('ls', () => session.ls());
+assert.equal(lsResult.exitCode, 0, lsResult.output);
+assert.match(lsResult.output, /notes\.txt/);
+const editResult = await step('editFile', () => session.editFile('notes.txt', 'one', 'uno'));
+assert.equal(editResult.exitCode, 0, editResult.output);
+const patchResult = await step('patchFile', () =>
+  session.patchFile('notes.txt', '@@ -1,2 +1,2 @@\n uno\n-two\n+dos'),
+);
+assert.equal(patchResult.exitCode, 0, patchResult.output);
+assert.equal(readFileSync(join(workspace, 'notes.txt'), 'utf8'), 'uno\ndos\n');
 
 const programResult = await step('program', () => session.program({
   source: `

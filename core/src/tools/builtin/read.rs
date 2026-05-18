@@ -64,17 +64,26 @@ impl Tool for ReadTool {
             .map(|v| v as usize)
             .unwrap_or(MAX_READ_LINES);
 
-        let resolved = match ctx.resolve_path(file_path) {
+        let workspace_path = match ctx.resolve_workspace_path(file_path) {
             Ok(p) => p,
             Err(e) => return Ok(ToolOutput::error(format!("Failed to resolve path: {}", e))),
         };
 
-        let content = match tokio::fs::read_to_string(&resolved).await {
+        let fs = ctx.workspace_services.fs();
+        let path_for_read = workspace_path.clone();
+        let content = match ctx
+            .workspace_services
+            .run_with_timeout(
+                "read_text",
+                async move { fs.read_text(&path_for_read).await },
+            )
+            .await
+        {
             Ok(c) => c,
             Err(e) => {
                 return Ok(ToolOutput::error(format!(
                     "Failed to read file {}: {}",
-                    resolved.display(),
+                    ctx.workspace_services.display_path(&workspace_path),
                     e
                 )))
             }

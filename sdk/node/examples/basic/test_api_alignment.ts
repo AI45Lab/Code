@@ -21,7 +21,7 @@ import { fileURLToPath } from 'url';
 
 const require = createRequire(import.meta.url);
 const a3sCode = require('@a3s-lab/code') as typeof import('@a3s-lab/code');
-const { Agent } = a3sCode;
+const { Agent, LocalWorkspaceBackend } = a3sCode;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -69,12 +69,14 @@ const opts: SessionOptions = {
   continuationEnabled: undefined,
   maxContinuationTurns: undefined,
   planningMode: undefined,
+  workspaceBackend: new LocalWorkspaceBackend(process.cwd()),
 };
 check('temperature field accepted', true);
 check('thinkingBudget field accepted', true);
 check('continuationEnabled field accepted', true);
 check('maxContinuationTurns field accepted', true);
 check('planningMode field accepted', true);
+check('workspaceBackend field accepted', true);
 
 const opts2: SessionOptions = {
   temperature: 0.5,
@@ -104,9 +106,17 @@ type ToolDefinitionsMethod = SessionApi['toolDefinitions'];
 const taskName: keyof Pick<SessionApi, 'task'> = 'task';
 const tasksName: keyof Pick<SessionApi, 'tasks'> = 'tasks';
 const toolDefinitionsName: keyof Pick<SessionApi, 'toolDefinitions'> = 'toolDefinitions';
+const writeFileName: keyof Pick<SessionApi, 'writeFile'> = 'writeFile';
+const lsName: keyof Pick<SessionApi, 'ls'> = 'ls';
+const editFileName: keyof Pick<SessionApi, 'editFile'> = 'editFile';
+const patchFileName: keyof Pick<SessionApi, 'patchFile'> = 'patchFile';
 check('task method type accepted', taskName === 'task');
 check('tasks method type accepted', tasksName === 'tasks');
 check('toolDefinitions method type accepted', toolDefinitionsName === 'toolDefinitions');
+check('writeFile method type accepted', writeFileName === 'writeFile');
+check('ls method type accepted', lsName === 'ls');
+check('editFile method type accepted', editFileName === 'editFile');
+check('patchFile method type accepted', patchFileName === 'patchFile');
 
 const sessionForAgentOpts: SessionOptions = {
   role: 'Custom reviewer',

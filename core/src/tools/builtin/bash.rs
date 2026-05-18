@@ -1,17 +1,37 @@
 //! Bash tool - Execute shell commands
 
-use crate::tools::process::read_process_output;
-use crate::tools::types::{Tool, ToolContext, ToolOutput};
+use crate::tools::types::{Tool, ToolContext, ToolEventSender, ToolOutput, ToolStreamEvent};
+use crate::workspace::{CommandOutputObserver, CommandRequest};
 use anyhow::Result;
 use async_trait::async_trait;
 #[cfg(windows)]
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use std::collections::HashMap;
 use std::process::Stdio;
+use std::sync::Arc;
 use tokio::process::Command;
 
 /// Default timeout in seconds (2 minutes)
-const DEFAULT_TIMEOUT_MS: u64 = 120_000;
+pub(crate) const DEFAULT_TIMEOUT_MS: u64 = 120_000;
+
+/// Adapter that forwards `CommandOutputObserver` deltas to a tool event channel.
+///
+/// Keeps `workspace::CommandRequest` free of `ToolEventSender`. Constructed in
+/// the bash tool when a session has installed an event channel; backend
+/// implementations only see `&dyn CommandOutputObserver`.
+struct ToolEventObserver {
+    tx: ToolEventSender,
+}
+
+#[async_trait]
+impl CommandOutputObserver for ToolEventObserver {
+    async fn on_output_delta(&self, delta: &str) {
+        self.tx
+            .send(ToolStreamEvent::OutputDelta(delta.to_string()))
+            .await
+            .ok();
+    }
+}
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -562,7 +582,7 @@ fn parse_simple_windows_http_command(command: &str) -> Option<SimpleWindowsHttpC
 }
 
 #[cfg(windows)]
-async fn maybe_execute_simple_windows_http_command(command: &str) -> Option<ToolOutput> {
+pub(crate) async fn maybe_execute_simple_windows_http_command(command: &str) -> Option<ToolOutput> {
     let parsed = parse_simple_windows_http_command(command)?;
     let method = reqwest::Method::from_bytes(parsed.method.as_bytes()).ok()?;
     let client = reqwest::Client::new();
@@ -964,7 +984,7 @@ pub struct BashTool;
 /// - Unix: `bash -c <command>`
 /// - Windows: `powershell.exe -Command <command>` with hidden console window,
 ///   falling back to `cmd.exe /C <command>` if PowerShell cannot be started.
-fn spawn_shell(
+pub(crate) fn spawn_shell(
     command: &str,
     workspace: &std::path::Path,
     command_env: Option<&HashMap<String, String>>,
@@ -1095,43 +1115,41 @@ impl Tool for BashTool {
             });
         }
 
-        // Local execution path (default when no sandbox is configured).
+        // Capability gating guarantees that `bash` is only registered when the
+        // workspace backend provides a command runner, so this unwrap is sound.
+        let runner = ctx
+            .workspace_services
+            .command_runner()
+            .expect("bash registered without workspace command runner");
         let timeout_ms = args
             .get("timeout")
             .and_then(|v| v.as_u64())
             .unwrap_or(DEFAULT_TIMEOUT_MS);
+        let output_observer = ctx
+            .event_tx
+            .clone()
+            .map(|tx| Arc::new(ToolEventObserver { tx }) as Arc<dyn CommandOutputObserver>);
+        let result = runner
+            .exec(CommandRequest {
+                command: command.to_string(),
+                timeout_ms,
+                output_observer,
+                env: ctx.command_env.clone(),
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("Workspace bash execution failed: {}", e))?;
 
-        #[cfg(windows)]
-        if let Some(output) = maybe_execute_simple_windows_http_command(command).await {
-            return Ok(output);
-        }
-
-        let timeout_secs = timeout_ms / 1000;
-
-        let mut child = spawn_shell(
-            command,
-            std::path::Path::new(&ctx.workspace),
-            ctx.command_env.as_deref(),
-        )
-        .map_err(|e| anyhow::anyhow!("Failed to spawn shell: {}", e))?;
-
-        let (output, timed_out) =
-            read_process_output(&mut child, timeout_secs, ctx.event_tx.as_ref()).await;
-
-        if timed_out {
+        if result.timed_out {
             return Ok(ToolOutput::error(format!(
                 "{}\n\n[Command timed out after {}ms]",
-                output, timeout_ms
+                result.output, timeout_ms
             )));
         }
 
-        let status = child.wait().await?;
-        let exit_code = status.code().unwrap_or(-1);
-
         Ok(ToolOutput {
-            content: output,
-            success: exit_code == 0,
-            metadata: Some(serde_json::json!({ "exit_code": exit_code })),
+            content: result.output,
+            success: result.exit_code == 0,
+            metadata: Some(serde_json::json!({ "exit_code": result.exit_code })),
             images: vec![],
         })
     }

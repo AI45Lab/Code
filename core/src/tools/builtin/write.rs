@@ -51,41 +51,33 @@ impl Tool for WriteTool {
             None => return Ok(ToolOutput::error("content parameter is required")),
         };
 
-        // Build the target path, creating parent dirs if needed
-        let target = if std::path::Path::new(file_path).is_absolute() {
-            std::path::PathBuf::from(file_path)
-        } else {
-            ctx.workspace.join(file_path)
-        };
-
-        // Create parent directories first (before resolve_path_for_write which checks parent exists)
-        if let Some(parent) = target.parent() {
-            if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                return Ok(ToolOutput::error(format!(
-                    "Failed to create parent directories for {}: {}",
-                    target.display(),
-                    e
-                )));
-            }
-        }
-
-        let resolved = match ctx.resolve_path_for_write(file_path) {
+        let workspace_path = match ctx.resolve_workspace_path(file_path) {
             Ok(p) => p,
             Err(e) => return Ok(ToolOutput::error(format!("Failed to resolve path: {}", e))),
         };
 
         // Read existing content for diff metadata (if file exists)
-        let before_content = if resolved.exists() {
-            tokio::fs::read_to_string(&resolved).await.ok()
-        } else {
-            None
-        };
+        let fs = ctx.workspace_services.fs();
+        let path_for_before = workspace_path.clone();
+        let fs_for_before = fs.clone();
+        let before_content = ctx
+            .workspace_services
+            .run_with_timeout("read_text", async move {
+                fs_for_before.read_text(&path_for_before).await
+            })
+            .await
+            .ok();
 
-        match tokio::fs::write(&resolved, content).await {
-            Ok(()) => {
-                let lines = content.lines().count();
-                let bytes = content.len();
-
+        let path_for_write = workspace_path.clone();
+        let content_for_write = content.to_string();
+        match ctx
+            .workspace_services
+            .run_with_timeout("write_text", async move {
+                fs.write_text(&path_for_write, &content_for_write).await
+            })
+            .await
+        {
+            Ok(outcome) => {
                 // Attach diff metadata
                 let mut metadata = serde_json::Map::new();
                 metadata.insert("file_path".to_string(), serde_json::json!(file_path));
@@ -96,15 +88,15 @@ impl Tool for WriteTool {
 
                 Ok(ToolOutput::success(format!(
                     "Wrote {} bytes ({} lines) to {}",
-                    bytes,
-                    lines,
-                    resolved.display()
+                    outcome.bytes,
+                    outcome.lines,
+                    ctx.workspace_services.display_path(&workspace_path)
                 ))
                 .with_metadata(serde_json::Value::Object(metadata)))
             }
             Err(e) => Ok(ToolOutput::error(format!(
                 "Failed to write file {}: {}",
-                resolved.display(),
+                ctx.workspace_services.display_path(&workspace_path),
                 e
             ))),
         }

@@ -45,6 +45,40 @@ impl DirectToolRuntime {
         Ok(result.output)
     }
 
+    pub(super) async fn write_file(&self, path: &str, content: &str) -> Result<ToolCallResult> {
+        let args = serde_json::json!({ "file_path": path, "content": content });
+        self.call("write", args).await
+    }
+
+    pub(super) async fn ls(&self, path: Option<&str>) -> Result<ToolCallResult> {
+        let args = match path {
+            Some(path) => serde_json::json!({ "path": path }),
+            None => serde_json::json!({}),
+        };
+        self.call("ls", args).await
+    }
+
+    pub(super) async fn edit_file(
+        &self,
+        path: &str,
+        old_string: &str,
+        new_string: &str,
+        replace_all: bool,
+    ) -> Result<ToolCallResult> {
+        let args = serde_json::json!({
+            "file_path": path,
+            "old_string": old_string,
+            "new_string": new_string,
+            "replace_all": replace_all,
+        });
+        self.call("edit", args).await
+    }
+
+    pub(super) async fn patch_file(&self, path: &str, diff: &str) -> Result<ToolCallResult> {
+        let args = serde_json::json!({ "file_path": path, "diff": diff });
+        self.call("patch", args).await
+    }
+
     pub(super) async fn bash(&self, command: &str) -> Result<String> {
         let args = serde_json::json!({ "command": command });
         let result = self

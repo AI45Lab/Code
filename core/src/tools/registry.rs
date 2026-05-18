@@ -34,10 +34,24 @@ impl ToolRegistry {
 
     /// Create a new tool registry with custom artifact retention limits.
     pub fn with_artifact_limits(workspace: PathBuf, artifact_limits: ArtifactStoreLimits) -> Self {
+        Self::with_artifact_limits_and_workspace_services(
+            workspace.clone(),
+            artifact_limits,
+            crate::workspace::WorkspaceServices::local(workspace),
+        )
+    }
+
+    /// Create a new tool registry with custom artifact limits and workspace backend.
+    pub fn with_artifact_limits_and_workspace_services(
+        workspace: PathBuf,
+        artifact_limits: ArtifactStoreLimits,
+        workspace_services: Arc<crate::workspace::WorkspaceServices>,
+    ) -> Self {
+        let context = ToolContext::new(workspace).with_workspace_services(workspace_services);
         Self {
             tools: RwLock::new(HashMap::new()),
             builtins: RwLock::new(std::collections::HashSet::new()),
-            context: RwLock::new(ToolContext::new(workspace)),
+            context: RwLock::new(context),
             artifact_store: ArtifactStore::with_limits(artifact_limits),
             trace_sink: RwLock::new(Arc::new(InMemoryTraceSink::default())),
         }
@@ -167,6 +181,13 @@ impl ToolRegistry {
     pub fn set_sandbox(&self, sandbox: std::sync::Arc<dyn crate::sandbox::BashSandbox>) {
         let mut ctx = self.context.write().unwrap();
         *ctx = ctx.clone().with_sandbox(sandbox);
+    }
+
+    /// Set environment overrides used by subprocess-backed tools when executed
+    /// without an explicit context.
+    pub fn set_command_env(&self, env: Arc<HashMap<String, String>>) {
+        let mut ctx = self.context.write().unwrap();
+        *ctx = ctx.clone().with_command_env(env);
     }
 
     /// Execute a tool by name using the registry's default context

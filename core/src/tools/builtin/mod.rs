@@ -3,7 +3,7 @@
 //! These replace the previous `a3s-tools` binary backend with direct Rust
 //! implementations that execute in-process. Each tool implements the `Tool` trait.
 
-mod bash;
+pub(crate) mod bash;
 pub mod batch;
 mod edit;
 mod generate_object;
@@ -20,22 +20,42 @@ mod write;
 use super::registry::ToolRegistry;
 use std::sync::Arc;
 
-/// Register all baseline built-in tools with the registry.
+/// Register all baseline built-in tools with the registry, gated by
+/// workspace capabilities.
+///
+/// Tools whose required capability is missing are not registered, so the model
+/// never sees a tool the backend cannot service. `web_fetch` and `web_search`
+/// have no workspace capability and are always registered.
 ///
 /// Note: `batch` is NOT registered here — it requires an `Arc<ToolRegistry>`
 /// and must be registered after the registry is wrapped in an Arc.
-pub fn register_builtins(registry: &ToolRegistry) {
-    registry.register_builtin(Arc::new(read::ReadTool));
-    registry.register_builtin(Arc::new(write::WriteTool));
-    registry.register_builtin(Arc::new(edit::EditTool));
-    registry.register_builtin(Arc::new(patch::PatchTool));
-    registry.register_builtin(Arc::new(bash::BashTool));
-    registry.register_builtin(Arc::new(grep::GrepTool));
-    registry.register_builtin(Arc::new(glob_tool::GlobTool));
-    registry.register_builtin(Arc::new(ls::LsTool));
+pub fn register_builtins(
+    registry: &ToolRegistry,
+    capabilities: &crate::workspace::WorkspaceCapabilities,
+) {
+    if capabilities.read {
+        registry.register_builtin(Arc::new(read::ReadTool));
+        registry.register_builtin(Arc::new(ls::LsTool));
+    }
+    if capabilities.write {
+        registry.register_builtin(Arc::new(write::WriteTool));
+    }
+    if capabilities.read && capabilities.write {
+        registry.register_builtin(Arc::new(edit::EditTool));
+        registry.register_builtin(Arc::new(patch::PatchTool));
+    }
+    if capabilities.exec {
+        registry.register_builtin(Arc::new(bash::BashTool));
+    }
+    if capabilities.search {
+        registry.register_builtin(Arc::new(grep::GrepTool));
+        registry.register_builtin(Arc::new(glob_tool::GlobTool));
+    }
+    if capabilities.git {
+        registry.register_builtin(Arc::new(git::GitTool));
+    }
     registry.register_builtin(Arc::new(web_fetch::WebFetchTool));
     registry.register_builtin(Arc::new(web_search::WebSearchTool::new()));
-    registry.register_builtin(Arc::new(git::GitTool));
 }
 
 /// Register the batch tool. Must be called after the registry is wrapped in Arc.

@@ -21,15 +21,9 @@ fn make_context(headless: Option<HeadlessConfig>) -> ToolContext {
         })
     });
 
-    ToolContext {
-        workspace: PathBuf::from("/tmp"),
-        session_id: Some("test-session".to_string()),
-        event_tx: None,
-        agent_event_tx: None,
-        search_config,
-        sandbox: None,
-        command_env: None,
-    }
+    let mut context = ToolContext::new(PathBuf::from("/tmp")).with_session_id("test-session");
+    context.search_config = search_config;
+    context
 }
 
 #[tokio::test]

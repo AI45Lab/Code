@@ -3,7 +3,6 @@
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
 use anyhow::Result;
 use async_trait::async_trait;
-use std::path::PathBuf;
 
 pub struct LsTool;
 
@@ -40,77 +39,49 @@ impl Tool for LsTool {
     async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
         let path_str = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
 
-        let target = if std::path::Path::new(path_str).is_absolute() {
-            PathBuf::from(path_str)
-        } else {
-            ctx.workspace.join(path_str)
+        let workspace_path = match ctx.resolve_workspace_path(path_str) {
+            Ok(p) => p,
+            Err(e) => return Ok(ToolOutput::error(format!("Failed to resolve path: {}", e))),
         };
 
-        if !target.exists() {
-            return Ok(ToolOutput::error(format!(
-                "Directory not found: {}",
-                target.display()
-            )));
-        }
-
-        if !target.is_dir() {
-            return Ok(ToolOutput::error(format!(
-                "Not a directory: {}",
-                target.display()
-            )));
-        }
-
-        let mut entries = Vec::new();
-        let mut dir = match tokio::fs::read_dir(&target).await {
-            Ok(d) => d,
+        let fs = ctx.workspace_services.fs();
+        let path_for_list = workspace_path.clone();
+        let mut entries = match ctx
+            .workspace_services
+            .run_with_timeout("list_dir", async move { fs.list_dir(&path_for_list).await })
+            .await
+        {
+            Ok(entries) => entries,
             Err(e) => {
                 return Ok(ToolOutput::error(format!(
                     "Failed to read directory {}: {}",
-                    target.display(),
+                    ctx.workspace_services.display_path(&workspace_path),
                     e
                 )))
             }
         };
 
-        while let Ok(Some(entry)) = dir.next_entry().await {
-            let name = entry.file_name().to_string_lossy().to_string();
-            let file_type = entry.file_type().await;
-            let metadata = entry.metadata().await;
-
-            let (kind, size) = match (&file_type, &metadata) {
-                (Ok(ft), Ok(m)) => {
-                    let kind = if ft.is_dir() {
-                        "dir"
-                    } else if ft.is_symlink() {
-                        "link"
-                    } else {
-                        "file"
-                    };
-                    (kind, m.len())
-                }
-                _ => ("unknown", 0),
-            };
-
-            entries.push((name, kind, size));
-        }
-
         entries.sort_by(|a, b| {
             // Directories first, then alphabetical
-            let dir_order = (a.1 != "dir").cmp(&(b.1 != "dir"));
-            dir_order.then(a.0.to_lowercase().cmp(&b.0.to_lowercase()))
+            let dir_order = (a.kind.as_tool_kind() != "dir").cmp(&(b.kind.as_tool_kind() != "dir"));
+            dir_order.then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
         });
 
-        let mut output = format!("Directory: {}\n\n", target.display());
+        let mut output = format!(
+            "Directory: {}\n\n",
+            ctx.workspace_services.display_path(&workspace_path)
+        );
 
         if entries.is_empty() {
             output.push_str("(empty directory)\n");
         } else {
-            for (name, kind, size) in &entries {
-                let size_str = format_size(*size);
-                let suffix = if *kind == "dir" { "/" } else { "" };
+            for entry in &entries {
+                let kind = entry.kind.as_tool_kind();
+                let size_str = format_size(entry.size);
+                let suffix = if kind == "dir" { "/" } else { "" };
                 output.push_str(&format!(
                     "{:<6} {:>8}  {}{}\n",
-                    kind, size_str, name, suffix
+                    kind, size_str, entry.name, suffix
                 ));
             }
             output.push_str(&format!("\n{} entries\n", entries.len()));

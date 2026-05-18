@@ -1,13 +1,17 @@
-//! Git tool — Uses system git with auto-installation support
+//! Git tool backed by workspace Git services.
 //!
-//! Provides Git operations using the external git command.
-//! If git is not installed, attempts to install it automatically.
+//! The tool keeps the model-facing contract stable while the concrete Git
+//! implementation can be local, remote, browser-backed, or DFS-backed.
 
-use crate::git;
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
+use crate::workspace::{
+    WorkspaceGit, WorkspaceGitCheckoutRequest, WorkspaceGitCreateBranchRequest,
+    WorkspaceGitCreateWorktreeRequest, WorkspaceGitDiffRequest, WorkspaceGitRemote,
+    WorkspaceGitRemoveWorktreeRequest, WorkspaceGitStashProvider, WorkspaceGitStashRequest,
+    WorkspaceGitWorktreeProvider,
+};
 use anyhow::Result;
 use async_trait::async_trait;
-use std::path::Path;
 
 pub struct GitTool;
 
@@ -18,7 +22,7 @@ impl Tool for GitTool {
     }
 
     fn description(&self) -> &str {
-        "Execute Git operations using the system git command. Supports: status, log, branch, checkout, diff, stash, remote, and worktree management. Auto-installs git if not available."
+        "Execute Git operations for the current workspace. Supports: status, log, branch, checkout, diff, stash, remote, and worktree management."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -33,7 +37,11 @@ impl Tool for GitTool {
                     ],
                     "description": "Required. Git command to execute."
                 },
-                // Branch/worktree specific
+                "subcommand": {
+                    "type": "string",
+                    "enum": ["list", "create", "remove"],
+                    "description": "Worktree subcommand. Defaults to list."
+                },
                 "name": {
                     "type": "string",
                     "description": "Branch name for branch/checkout/worktree operations."
@@ -42,7 +50,6 @@ impl Tool for GitTool {
                     "type": "string",
                     "description": "Path for worktree operations."
                 },
-                // Checkout specific
                 "ref": {
                     "type": "string",
                     "description": "Reference (branch, tag, commit) for checkout."
@@ -51,17 +58,14 @@ impl Tool for GitTool {
                     "type": "boolean",
                     "description": "Force checkout/create even if it loses changes."
                 },
-                // Diff specific
                 "target": {
                     "type": "string",
                     "description": "Target ref for diff (e.g., HEAD~1, main). If omitted, diffs working tree."
                 },
-                // Log specific
                 "max_count": {
                     "type": "integer",
                     "description": "Maximum number of log entries to show (default 10)."
                 },
-                // Stash specific
                 "message": {
                     "type": "string",
                     "description": "Message for stash."
@@ -70,12 +74,10 @@ impl Tool for GitTool {
                     "type": "boolean",
                     "description": "Include untracked files in stash (default false)."
                 },
-                // Remote specific
                 "remote_name": {
                     "type": "string",
-                    "description": "Remote name (default 'origin')."
+                    "description": "Remote name (reserved for provider-specific filtering)."
                 },
-                // Worktree specific
                 "new_branch": {
                     "type": "boolean",
                     "description": "Create a new branch for worktree (default true)."
@@ -97,7 +99,7 @@ impl Tool for GitTool {
                 {"command": "stash"},
                 {"command": "stash", "message": "WIP: work in progress"},
                 {"command": "remote"},
-                {"command": "worktree", "command": "list"}
+                {"command": "worktree", "subcommand": "list"}
             ]
         })
     }
@@ -108,23 +110,50 @@ impl Tool for GitTool {
             None => return Ok(ToolOutput::error("command parameter is required")),
         };
 
-        // Verify workspace is a git repo
-        if !git::is_git_repo(&ctx.workspace) {
-            return Ok(ToolOutput::error(format!(
-                "Not a git repository: {}",
-                ctx.workspace.display()
-            )));
+        let Some(git) = ctx.workspace_services.git() else {
+            return Ok(ToolOutput::error(
+                "Git is not available for this workspace backend",
+            ));
+        };
+
+        match git.is_repository().await {
+            Ok(true) => {}
+            Ok(false) => {
+                return Ok(ToolOutput::error(format!(
+                    "Not a git repository: {}",
+                    ctx.workspace_services.workspace_ref().display_root
+                )))
+            }
+            Err(e) => {
+                return Ok(ToolOutput::error(format!(
+                    "Failed to inspect git repository: {e}"
+                )))
+            }
         }
 
         match command {
-            "status" => self.status(ctx).await,
-            "log" => self.log(args, ctx).await,
-            "branch" => self.branch(args, ctx).await,
-            "checkout" => self.checkout(args, ctx).await,
-            "diff" => self.diff(args, ctx).await,
-            "stash" => self.stash(args, ctx).await,
-            "remote" => self.remote(args, ctx).await,
-            "worktree" => self.worktree(args, ctx).await,
+            "status" => self.status(ctx, git.as_ref()).await,
+            "log" => self.log(args, git.as_ref()).await,
+            "branch" => self.branch(args, git.as_ref()).await,
+            "checkout" => self.checkout(args, git.as_ref()).await,
+            "diff" => self.diff(args, git.as_ref()).await,
+            "stash" => {
+                let Some(stash) = ctx.workspace_services.git_stash() else {
+                    return Ok(ToolOutput::error(
+                        "Stash operations are not supported by this workspace backend",
+                    ));
+                };
+                self.stash(args, stash.as_ref()).await
+            }
+            "remote" => self.remote(git.as_ref()).await,
+            "worktree" => {
+                let Some(worktree) = ctx.workspace_services.git_worktree() else {
+                    return Ok(ToolOutput::error(
+                        "Worktree operations are not supported by this workspace backend",
+                    ));
+                };
+                self.worktree(args, worktree.as_ref()).await
+            }
             _ => Ok(ToolOutput::error(format!(
                 "Unknown command: {command}. Use: status, log, branch, checkout, diff, stash, remote, worktree"
             ))),
@@ -134,8 +163,8 @@ impl Tool for GitTool {
 
 impl GitTool {
     /// Show repository status.
-    async fn status(&self, ctx: &ToolContext) -> Result<ToolOutput> {
-        match git::get_status(&ctx.workspace) {
+    async fn status(&self, ctx: &ToolContext, git: &dyn WorkspaceGit) -> Result<ToolOutput> {
+        match git.status().await {
             Ok(status) => {
                 let status_str = if status.is_dirty {
                     format!("{} uncommitted change(s)", status.dirty_count)
@@ -149,7 +178,7 @@ impl GitTool {
                      Commit:    {}\n\
                      Status:    {}\n\
                      Worktree:  {}",
-                    ctx.workspace.display(),
+                    ctx.workspace_services.workspace_ref().display_root,
                     status.branch,
                     status.commit,
                     status_str,
@@ -171,10 +200,10 @@ impl GitTool {
     }
 
     /// Show commit log.
-    async fn log(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
+    async fn log(&self, args: &serde_json::Value, git: &dyn WorkspaceGit) -> Result<ToolOutput> {
         let max_count = args.get("max_count").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
 
-        match git::get_log(&ctx.workspace, max_count) {
+        match git.log(max_count).await {
             Ok(commits) => {
                 if commits.is_empty() {
                     return Ok(ToolOutput::success("No commits found."));
@@ -182,13 +211,13 @@ impl GitTool {
 
                 let entries: Vec<String> = commits
                     .iter()
-                    .map(|c| {
+                    .map(|commit| {
                         format!(
                             "{} - {} ({})\n  {}",
-                            &c.id[..7],
-                            c.author,
-                            c.date,
-                            c.message
+                            short_commit_id(&commit.id),
+                            commit.author,
+                            commit.date,
+                            commit.message
                         )
                     })
                     .collect();
@@ -205,13 +234,19 @@ impl GitTool {
     }
 
     /// Branch operations: list or create.
-    async fn branch(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
+    async fn branch(&self, args: &serde_json::Value, git: &dyn WorkspaceGit) -> Result<ToolOutput> {
         let name = args.get("name").and_then(|v| v.as_str());
 
         if let Some(branch_name) = name {
             let base = args.get("base").and_then(|v| v.as_str()).unwrap_or("HEAD");
 
-            match git::create_branch(&ctx.workspace, branch_name, base) {
+            match git
+                .create_branch(WorkspaceGitCreateBranchRequest {
+                    name: branch_name.to_string(),
+                    base: base.to_string(),
+                })
+                .await
+            {
                 Ok(_) => Ok(ToolOutput::success(format!(
                     "Created branch: {} (based on {})",
                     branch_name, base
@@ -220,8 +255,7 @@ impl GitTool {
                 Err(e) => Ok(ToolOutput::error(format!("Failed to create branch: {e}"))),
             }
         } else {
-            // List branches
-            match git::list_branches(&ctx.workspace) {
+            match git.list_branches().await {
                 Ok(branches) => {
                     if branches.is_empty() {
                         return Ok(ToolOutput::success("No branches found."));
@@ -229,9 +263,9 @@ impl GitTool {
 
                     let entries: Vec<String> = branches
                         .iter()
-                        .map(|b| {
-                            let prefix = if b.is_current { "* " } else { "  " };
-                            format!("{}{}", prefix, b.name)
+                        .map(|branch| {
+                            let prefix = if branch.is_current { "* " } else { "  " };
+                            format!("{}{}", prefix, branch.name)
                         })
                         .collect();
 
@@ -246,47 +280,46 @@ impl GitTool {
     }
 
     /// Checkout a branch or commit.
-    async fn checkout(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
+    async fn checkout(
+        &self,
+        args: &serde_json::Value,
+        git: &dyn WorkspaceGit,
+    ) -> Result<ToolOutput> {
         let refspec = match args.get("ref").and_then(|v| v.as_str()) {
             Some(r) => r,
             None => return Ok(ToolOutput::error("ref parameter is required for checkout")),
         };
 
         let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
-        let args_strs: Vec<&str> = if force {
-            vec!["checkout", "--force", refspec]
-        } else {
-            vec!["checkout", refspec]
-        };
 
-        let output = tokio::process::Command::new("git")
-            .args(["-C", &ctx.workspace.display().to_string()])
-            .args(&args_strs)
-            .output()
-            .await?;
-
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            Ok(ToolOutput::success(format!(
+        match git
+            .checkout(WorkspaceGitCheckoutRequest {
+                refspec: refspec.to_string(),
+                force,
+            })
+            .await
+        {
+            Ok(output) => Ok(ToolOutput::success(format!(
                 "Checked out: {}{}",
                 refspec,
-                if stdout.trim().is_empty() {
-                    "".to_string()
+                if output.stdout.trim().is_empty() {
+                    String::new()
                 } else {
-                    format!("\n{}", stdout)
+                    format!("\n{}", output.stdout)
                 }
-            )))
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            Ok(ToolOutput::error(format!("Failed to checkout: {}", stderr)))
+            ))),
+            Err(e) => Ok(ToolOutput::error(format!("Failed to checkout: {e}"))),
         }
     }
 
     /// Show diff.
-    async fn diff(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
-        let target = args.get("target").and_then(|v| v.as_str());
+    async fn diff(&self, args: &serde_json::Value, git: &dyn WorkspaceGit) -> Result<ToolOutput> {
+        let target = args
+            .get("target")
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string);
 
-        match git::get_diff(&ctx.workspace, target) {
+        match git.diff(WorkspaceGitDiffRequest { target }).await {
             Ok(diff) => {
                 if diff.trim().is_empty() {
                     return Ok(ToolOutput::success("No changes.".to_string()));
@@ -298,22 +331,33 @@ impl GitTool {
     }
 
     /// Stash operations.
-    async fn stash(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
-        let message = args.get("message").and_then(|v| v.as_str());
+    async fn stash(
+        &self,
+        args: &serde_json::Value,
+        stash: &dyn WorkspaceGitStashProvider,
+    ) -> Result<ToolOutput> {
+        let message = args
+            .get("message")
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string);
         let include_untracked = args
             .get("include_untracked")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
         if message.is_some() || include_untracked {
-            // Create stash
-            match git::stash(&ctx.workspace, message, include_untracked) {
+            match stash
+                .stash(WorkspaceGitStashRequest {
+                    message,
+                    include_untracked,
+                })
+                .await
+            {
                 Ok(_) => Ok(ToolOutput::success("Created stash".to_string())),
                 Err(e) => Ok(ToolOutput::error(format!("Failed to stash: {e}"))),
             }
         } else {
-            // List stashes
-            match git::list_stashes(&ctx.workspace) {
+            match stash.list_stashes().await {
                 Ok(stashes) => {
                     if stashes.is_empty() {
                         return Ok(ToolOutput::success("No stashes found.".to_string()));
@@ -321,7 +365,7 @@ impl GitTool {
 
                     let entries: Vec<String> = stashes
                         .iter()
-                        .map(|s| format!("{}: {}", s.index, s.message))
+                        .map(|stash| format!("{}: {}", stash.index, stash.message))
                         .collect();
 
                     Ok(
@@ -335,33 +379,37 @@ impl GitTool {
     }
 
     /// Show remote information.
-    async fn remote(&self, _args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
-        let output = tokio::process::Command::new("git")
-            .args(["-C", &ctx.workspace.display().to_string()])
-            .args(["remote", "-v"])
-            .output()
-            .await?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-
-        if output.status.success() && !stdout.trim().is_empty() {
-            Ok(ToolOutput::success(format!("Remotes:\n{}", stdout)))
-        } else {
-            Ok(ToolOutput::success("No remotes configured.".to_string()))
+    async fn remote(&self, git: &dyn WorkspaceGit) -> Result<ToolOutput> {
+        match git.list_remotes().await {
+            Ok(remotes) if remotes.is_empty() => {
+                Ok(ToolOutput::success("No remotes configured.".to_string()))
+            }
+            Ok(remotes) => {
+                let entries: Vec<String> = remotes.iter().map(format_remote).collect();
+                Ok(ToolOutput::success(format!(
+                    "Remotes:\n{}",
+                    entries.join("\n")
+                )))
+            }
+            Err(e) => Ok(ToolOutput::error(format!("Failed to list remotes: {e}"))),
         }
     }
 
     /// Worktree operations.
-    async fn worktree(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
+    async fn worktree(
+        &self,
+        args: &serde_json::Value,
+        worktree: &dyn WorkspaceGitWorktreeProvider,
+    ) -> Result<ToolOutput> {
         let subcommand = args
             .get("subcommand")
             .and_then(|v| v.as_str())
             .unwrap_or("list");
 
         match subcommand {
-            "list" => self.list_worktrees(ctx).await,
-            "create" => self.create_worktree(args, ctx).await,
-            "remove" => self.remove_worktree(args, ctx).await,
+            "list" => self.list_worktrees(worktree).await,
+            "create" => self.create_worktree(args, worktree).await,
+            "remove" => self.remove_worktree(args, worktree).await,
             _ => Ok(ToolOutput::error(format!(
                 "Unknown worktree subcommand: {subcommand}. Use: list, create, remove"
             ))),
@@ -369,8 +417,11 @@ impl GitTool {
     }
 
     /// List all worktrees.
-    async fn list_worktrees(&self, ctx: &ToolContext) -> Result<ToolOutput> {
-        match git::list_worktrees(&ctx.workspace) {
+    async fn list_worktrees(
+        &self,
+        worktree: &dyn WorkspaceGitWorktreeProvider,
+    ) -> Result<ToolOutput> {
+        match worktree.list_worktrees().await {
             Ok(worktrees) => {
                 if worktrees.is_empty() {
                     return Ok(ToolOutput::success("No worktrees found."));
@@ -378,15 +429,15 @@ impl GitTool {
 
                 let entries: Vec<String> = worktrees
                     .iter()
-                    .map(|wt| {
-                        let suffix = if wt.is_bare {
+                    .map(|worktree| {
+                        let suffix = if worktree.is_bare {
                             " (bare)".to_string()
-                        } else if wt.is_detached {
+                        } else if worktree.is_detached {
                             " (detached)".to_string()
                         } else {
-                            format!(" [{}]", wt.branch)
+                            format!(" [{}]", worktree.branch)
                         };
-                        format!("  {}{}", wt.path, suffix)
+                        format!("  {}{}", worktree.path, suffix)
                     })
                     .collect();
 
@@ -405,7 +456,7 @@ impl GitTool {
     async fn create_worktree(
         &self,
         args: &serde_json::Value,
-        ctx: &ToolContext,
+        worktree: &dyn WorkspaceGitWorktreeProvider,
     ) -> Result<ToolOutput> {
         let branch = match args
             .get("name")
@@ -424,28 +475,25 @@ impl GitTool {
             .get("new_branch")
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
+        let path = args
+            .get("path")
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string);
 
-        let path = if let Some(p) = args.get("path").and_then(|v| v.as_str()) {
-            ctx.workspace.join(p)
-        } else {
-            let repo_name = ctx
-                .workspace
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| "repo".to_string());
-            ctx.workspace
-                .parent()
-                .unwrap_or(&ctx.workspace)
-                .join(format!("{repo_name}-{branch}"))
-        };
-
-        match git::create_worktree(&ctx.workspace, branch, &path, new_branch) {
-            Ok(_) => Ok(ToolOutput::success(format!(
+        match worktree
+            .create_worktree(WorkspaceGitCreateWorktreeRequest {
+                branch: branch.to_string(),
+                path,
+                new_branch,
+            })
+            .await
+        {
+            Ok(result) => Ok(ToolOutput::success(format!(
                 "Created worktree at: {}\nBranch: {branch}",
-                path.display()
+                result.path
             ))
             .with_metadata(serde_json::json!({
-                "path": path.display().to_string(),
+                "path": result.path,
                 "branch": branch,
             }))),
             Err(e) => Ok(ToolOutput::error(format!("Failed to create worktree: {e}"))),
@@ -456,7 +504,7 @@ impl GitTool {
     async fn remove_worktree(
         &self,
         args: &serde_json::Value,
-        ctx: &ToolContext,
+        worktree: &dyn WorkspaceGitWorktreeProvider,
     ) -> Result<ToolOutput> {
         let path = match args.get("path").and_then(|v| v.as_str()) {
             Some(p) => p,
@@ -468,15 +516,32 @@ impl GitTool {
         };
 
         let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
-        let path = Path::new(path);
 
-        match git::remove_worktree(&ctx.workspace, path, force) {
-            Ok(_) => Ok(ToolOutput::success(format!(
+        match worktree
+            .remove_worktree(WorkspaceGitRemoveWorktreeRequest {
+                path: path.to_string(),
+                force,
+            })
+            .await
+        {
+            Ok(result) => Ok(ToolOutput::success(format!(
                 "Removed worktree at: {}",
-                path.display()
+                result.path
             ))),
             Err(e) => Ok(ToolOutput::error(format!("Failed to remove worktree: {e}"))),
         }
+    }
+}
+
+fn short_commit_id(id: &str) -> &str {
+    id.get(..7).unwrap_or(id)
+}
+
+fn format_remote(remote: &WorkspaceGitRemote) -> String {
+    if remote.direction.is_empty() {
+        format!("{}\t{}", remote.name, remote.url)
+    } else {
+        format!("{}\t{} ({})", remote.name, remote.url, remote.direction)
     }
 }
 
@@ -487,7 +552,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_git_not_installed() {
-        // This test just checks that the tool handles non-git repos properly
+        // This test checks that the local provider handles non-git repos properly.
         let tool = GitTool;
         let dir = tempfile::tempdir().unwrap();
         let ctx = ToolContext::new(dir.path().to_path_buf());

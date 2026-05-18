@@ -15,6 +15,7 @@
 //! | max_execution_time_ms   | Yes       | Prevents runaway child runs                    |
 //! | circuit_breaker_threshold | Yes     | LLM failure handling should be consistent      |
 //! | confirmation_manager    | Depends   | Governed by ConfirmationInheritance            |
+//! | workspace_services      | Yes       | Child tools must operate on the same workspace |
 //! | memory                  | No        | Child has isolated context                     |
 //! | queue_config            | No        | Child runs are synchronous within parent       |
 //! | planning_mode           | No        | Child tasks are pre-planned by parent          |
@@ -39,6 +40,7 @@ pub struct ChildRunContext {
     pub max_execution_time_ms: Option<u64>,
     pub circuit_breaker_threshold: Option<u32>,
     pub confirmation_manager: Option<Arc<dyn ConfirmationProvider>>,
+    pub workspace_services: Option<Arc<crate::workspace::WorkspaceServices>>,
 }
 
 impl ChildRunContext {

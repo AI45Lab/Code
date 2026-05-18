@@ -76,18 +76,27 @@ impl Tool for EditTool {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        let resolved = match ctx.resolve_path(file_path) {
-            Ok(p) => p,
+        let workspace_path = match ctx.resolve_workspace_path(file_path) {
+            Ok(path) => path,
             Err(e) => return Ok(ToolOutput::error(format!("Failed to resolve path: {}", e))),
         };
+        let display_path = ctx.workspace_services.display_path(&workspace_path);
 
-        let content = match tokio::fs::read_to_string(&resolved).await {
+        let fs = ctx.workspace_services.fs();
+        let path_for_read = workspace_path.clone();
+        let fs_for_read = fs.clone();
+        let content = match ctx
+            .workspace_services
+            .run_with_timeout("read_text", async move {
+                fs_for_read.read_text(&path_for_read).await
+            })
+            .await
+        {
             Ok(c) => c,
             Err(e) => {
                 return Ok(ToolOutput::error(format!(
                     "Failed to read file {}: {}",
-                    resolved.display(),
-                    e
+                    display_path, e
                 )))
             }
         };
@@ -97,7 +106,7 @@ impl Tool for EditTool {
         if count == 0 {
             return Ok(ToolOutput::error(format!(
                 "old_string not found in {}",
-                resolved.display()
+                display_path
             )));
         }
 
@@ -105,7 +114,7 @@ impl Tool for EditTool {
             return Ok(ToolOutput::error(format!(
                 "old_string found {} times in {}. Use replace_all=true to replace all occurrences, or provide a more specific string.",
                 count,
-                resolved.display()
+                display_path
             )));
         }
 
@@ -115,8 +124,16 @@ impl Tool for EditTool {
             content.replacen(old_string, new_string, 1)
         };
 
-        match tokio::fs::write(&resolved, &new_content).await {
-            Ok(()) => {
+        let path_for_write = workspace_path.clone();
+        let content_for_write = new_content.clone();
+        match ctx
+            .workspace_services
+            .run_with_timeout("write_text", async move {
+                fs.write_text(&path_for_write, &content_for_write).await
+            })
+            .await
+        {
+            Ok(_) => {
                 // Attach diff metadata so frontend can show Monaco diff
                 let mut metadata = serde_json::Map::new();
                 metadata.insert("file_path".to_string(), serde_json::json!(file_path));
@@ -126,14 +143,13 @@ impl Tool for EditTool {
                 Ok(ToolOutput::success(format!(
                     "Replaced {} occurrence(s) in {}",
                     if replace_all { count } else { 1 },
-                    resolved.display()
+                    display_path
                 ))
                 .with_metadata(serde_json::Value::Object(metadata)))
             }
             Err(e) => Ok(ToolOutput::error(format!(
                 "Failed to write file {}: {}",
-                resolved.display(),
-                e
+                display_path, e
             ))),
         }
     }

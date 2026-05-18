@@ -1176,7 +1176,7 @@ async fn test_integration_generate_blocking_prompt_mode() {
     let result = result.unwrap();
     assert_eq!(result.object["sentiment"], "positive");
     let confidence = result.object["confidence"].as_f64().unwrap();
-    assert!(confidence >= 0.0 && confidence <= 1.0);
+    assert!((0.0..=1.0).contains(&confidence));
     eprintln!(
         "Integration test passed: sentiment={}, confidence={}, repairs={}",
         result.object["sentiment"], confidence, result.repair_rounds
@@ -1243,7 +1243,7 @@ async fn test_integration_generate_streaming_tool_mode() {
     for lang in languages {
         assert!(lang["name"].is_string());
         let year = lang["year"].as_i64().unwrap();
-        assert!(year >= 1950 && year <= 2030);
+        assert!((1950..=2030).contains(&year));
     }
 
     let partial_count = partials.lock().unwrap().len();

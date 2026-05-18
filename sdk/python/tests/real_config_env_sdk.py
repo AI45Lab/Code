@@ -11,7 +11,7 @@ import os
 import tempfile
 import time
 
-from a3s_code import Agent, PermissionPolicy, SessionOptions
+from a3s_code import Agent, LocalWorkspaceBackend, PermissionPolicy, SessionOptions
 
 
 RUN_FULL_AGENT_SMOKE = os.environ.get("A3S_CODE_SDK_REAL_AGENT_SMOKE") != "0"
@@ -47,6 +47,7 @@ opts.circuit_breaker_threshold = 1
 workspace = os.environ.get("A3S_CODE_SDK_REAL_WORKSPACE") or tempfile.mkdtemp(
     prefix="a3s-code-python-sdk-real-"
 )
+opts.workspace_backend = LocalWorkspaceBackend(workspace)
 print(f"[python-sdk-real] workspace={workspace}", flush=True)
 session = agent.session(workspace, opts)
 
@@ -58,6 +59,26 @@ assert "parallel_task" in tool_names
 tool_definitions = step("tool_definitions", session.tool_definitions)
 assert isinstance(tool_definitions, list)
 assert any(tool.get("name") == "program" for tool in tool_definitions)
+
+write_result = step(
+    "write_file",
+    lambda: session.write_file("notes.txt", "one\ntwo\n"),
+)
+assert write_result.exit_code == 0, write_result.output
+assert "one" in step("read_file", lambda: session.read_file("notes.txt"))
+ls_result = step("ls", lambda: session.ls())
+assert ls_result.exit_code == 0, ls_result.output
+assert "notes.txt" in ls_result.output
+edit_result = step(
+    "edit_file",
+    lambda: session.edit_file("notes.txt", "one", "uno"),
+)
+assert edit_result.exit_code == 0, edit_result.output
+patch_result = step(
+    "patch_file",
+    lambda: session.patch_file("notes.txt", "@@ -1,2 +1,2 @@\n uno\n-two\n+dos"),
+)
+assert patch_result.exit_code == 0, patch_result.output
 
 program_result = step(
     "program",

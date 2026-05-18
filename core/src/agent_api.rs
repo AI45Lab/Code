@@ -175,6 +175,13 @@ pub struct SessionOptions {
     /// of `std::process::Command`. The host application constructs and owns
     /// the implementation (e.g., an A3S Box–backed handle).
     pub sandbox_handle: Option<Arc<dyn crate::sandbox::BashSandbox>>,
+    /// Optional host-provided workspace backend.
+    ///
+    /// When set, built-in tools such as `read`, `write`, `ls`, and `bash`
+    /// execute against these workspace capabilities instead of assuming the
+    /// server-local filesystem. This is the primary extension point for DFS,
+    /// browser, container, and remote workspace deployments.
+    pub workspace_services: Option<Arc<crate::workspace::WorkspaceServices>>,
     /// Enable auto-compaction when context usage exceeds threshold.
     pub auto_compact: bool,
     /// Context usage percentage threshold for auto-compaction (0.0 - 1.0).
@@ -689,6 +696,38 @@ impl AgentSession {
     /// Read a file from the workspace.
     pub async fn read_file(&self, path: &str) -> Result<String> {
         DirectToolRuntime::from_session(self).read_file(path).await
+    }
+
+    /// Write a file in the workspace.
+    pub async fn write_file(&self, path: &str, content: &str) -> Result<ToolCallResult> {
+        DirectToolRuntime::from_session(self)
+            .write_file(path, content)
+            .await
+    }
+
+    /// List a directory in the workspace.
+    pub async fn ls(&self, path: Option<&str>) -> Result<ToolCallResult> {
+        DirectToolRuntime::from_session(self).ls(path).await
+    }
+
+    /// Edit a file by replacing text in the workspace.
+    pub async fn edit_file(
+        &self,
+        path: &str,
+        old_string: &str,
+        new_string: &str,
+        replace_all: bool,
+    ) -> Result<ToolCallResult> {
+        DirectToolRuntime::from_session(self)
+            .edit_file(path, old_string, new_string, replace_all)
+            .await
+    }
+
+    /// Apply a unified diff patch to a workspace file.
+    pub async fn patch_file(&self, path: &str, diff: &str) -> Result<ToolCallResult> {
+        DirectToolRuntime::from_session(self)
+            .patch_file(path, diff)
+            .await
     }
 
     /// Execute a bash command in the workspace.
