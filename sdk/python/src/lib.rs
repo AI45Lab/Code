@@ -1535,6 +1535,40 @@ impl PySession {
         json_string_to_py(py, &json)
     }
 
+    /// Look up a delegated subagent task by id. Returns None when no such
+    /// task has been observed in this session.
+    fn subagent_task(&self, py: Python<'_>, task_id: String) -> PyResult<PyObject> {
+        let session = self.inner.clone();
+        let snapshot =
+            py.allow_threads(move || get_runtime().block_on(session.subagent_task(&task_id)));
+        let json = serde_json::to_string(&snapshot).map_err(|e| {
+            PyRuntimeError::new_err(format!("Failed to serialize subagent task: {e}"))
+        })?;
+        json_string_to_py(py, &json)
+    }
+
+    /// Return snapshots of every delegated subagent task observed in this
+    /// session (including completed and failed ones), oldest first.
+    fn subagent_tasks(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let session = self.inner.clone();
+        let tasks = py.allow_threads(move || get_runtime().block_on(session.subagent_tasks()));
+        let json = serde_json::to_string(&tasks).map_err(|e| {
+            PyRuntimeError::new_err(format!("Failed to serialize subagent tasks: {e}"))
+        })?;
+        json_string_to_py(py, &json)
+    }
+
+    /// Return snapshots of subagent tasks still in `running` state.
+    fn pending_subagent_tasks(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let session = self.inner.clone();
+        let tasks =
+            py.allow_threads(move || get_runtime().block_on(session.pending_subagent_tasks()));
+        let json = serde_json::to_string(&tasks).map_err(|e| {
+            PyRuntimeError::new_err(format!("Failed to serialize pending subagent tasks: {e}"))
+        })?;
+        json_string_to_py(py, &json)
+    }
+
     /// Cancel a specific run only if it is still the active run.
     fn cancel_run(&self, py: Python<'_>, run_id: String) -> bool {
         let session = self.inner.clone();
