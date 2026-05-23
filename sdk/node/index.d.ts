@@ -73,10 +73,9 @@ export interface AgentEvent {
   data?: string
   /**
    * Structured discriminant for tool failures on `tool_end` events
-   * (JSON-encoded with a `type` field on the top level, e.g.
-   * `{"type":"version_conflict","path":"doc.md","expected":"etag-1","actual":"etag-2"}`).
-   * Undefined on success or untyped failure. Streaming consumers parse
-   * this to branch on the failure kind without scanning `toolOutput`.
+   * (JSON-encoded with a `type` field). `None` on success or untyped
+   * failure. Lets streaming consumers branch on the failure kind
+   * without scanning `tool_output`.
    */
   errorKindJson?: string
 }
@@ -126,7 +125,7 @@ export interface ToolResult {
    * Structured discriminant for tool failures, JSON-encoded with a
    * `type` field on the top level — e.g.
    * `{"type":"version_conflict","path":"doc.md","expected":"etag-1","actual":"etag-2"}`.
-   * Undefined on success or untyped failure. SDK callers parse it to
+   * `None` on success or untyped failure. SDK callers parse it to
    * branch on the failure kind without scanning the `output` string.
    */
   errorKindJson?: string
@@ -225,16 +224,6 @@ export interface InlineSkill {
   /** Markdown content for the skill. */
   content: string
 }
-export interface AutoDelegationOptions {
-  /** Enable runtime-driven automatic child-agent delegation. */
-  enabled?: boolean
-  /** Allow automatic delegation to launch multiple child agents in parallel. */
-  autoParallel?: boolean
-  /** Minimum local confidence required to auto-delegate a child task. */
-  minConfidence?: number
-  /** Maximum number of automatic child tasks per user request. */
-  maxTasks?: number
-}
 export interface JsMemoryStore {
   backend: string
   dir?: string
@@ -305,20 +294,21 @@ export interface JsS3BackendConfig {
    */
   maxGrepBytesPerObject?: number
   /**
-   * Concurrent object downloads during `grep`. Defaults to 8 on the Rust
-   * side. Set lower when the gitserver / S3 endpoint rate-limits
+   * Concurrent object downloads during `grep`. Defaults to 8 on the
+   * Rust side. Set lower when the gitserver / S3 endpoint rate-limits
    * aggressively; set higher when latency dominates. Ignored when
    * `searchEnabled` is `false`.
    */
   searchConcurrency?: number
 }
 /**
- * Configuration for a `RemoteGitBackend` — an HTTP/JSON client that
+ * Configuration for a [`RemoteGitBackend`] — an HTTP/JSON client that
  * brings the `git` tool to non-local workspaces (S3, future container /
  * DFS).
  *
  * Pass alongside `workspaceBackend` on a session to attach remote git
- * on top of any filesystem backend.
+ * on top of any filesystem backend. The protocol is specified in the
+ * repository RFC `apps/docs/content/docs/en/code/rfcs/workspace-remote-git.mdx`.
  */
 export interface JsRemoteGitBackendConfig {
   /**
@@ -333,14 +323,15 @@ export interface JsRemoteGitBackendConfig {
   repoId: string
   /**
    * Bearer token sent as `Authorization: Bearer <token>`. Required in
-   * production; omitting it emits a server-side warning and is only safe
+   * production; omitting it emits a `tracing::warn!` and is only safe
    * on a trusted localhost gitserver.
    */
   bearerToken?: string
   /**
-   * mTLS client certificate path (PEM). When set together with `clientKeyPem`,
-   * the backend reads both files at construction and configures mTLS on the
-   * HTTP client. Setting only one of the pair errors at construction.
+   * mTLS client certificate path (PEM). When set together with
+   * `clientKeyPem`, the backend reads both files at construction and
+   * configures mTLS on the HTTP client. Setting only one of the pair
+   * errors at construction.
    */
   clientCertPem?: string
   /**
@@ -444,12 +435,19 @@ export interface PendingConfirmation {
   /** Milliseconds remaining before the confirmation times out. */
   remainingMs: number
 }
-/** Retention limits for large tool/program artifacts. */
-export interface ArtifactStoreLimits {
-  /** Maximum number of artifacts retained by a session. */
-  maxArtifacts?: number
-  /** Maximum total artifact content bytes retained by a session. */
-  maxBytes?: number
+export interface AutoDelegationOptions {
+  /** Enable runtime-driven automatic child-agent delegation. */
+  enabled?: boolean
+  /**
+   * Allow automatic delegation to launch multiple child agents in parallel.
+   *
+   * Manual `parallel_task` calls remain available when this is false.
+   */
+  autoParallel?: boolean
+  /** Minimum local confidence required to auto-delegate a child task. */
+  minConfidence?: number
+  /** Maximum number of automatic child tasks per user request. */
+  maxTasks?: number
 }
 export interface SessionOptions {
   /** Override the default model. Format: "provider/model" (e.g., "openai/gpt-4o"). */
@@ -667,6 +665,13 @@ export interface SessionOptions {
    * ```
    */
   maxExecutionTimeMs?: number
+}
+/** Retention limits for large tool/program artifacts. */
+export interface ArtifactStoreLimits {
+  /** Maximum number of artifacts retained by a session. */
+  maxArtifacts?: number
+  /** Maximum total artifact content bytes retained by a session. */
+  maxBytes?: number
 }
 /** A single message in conversation history. */
 export interface MessageObject {
@@ -1174,6 +1179,18 @@ export declare class Session {
   currentRun(): Promise<any>
   /** Return active tool calls observed for the currently running operation. */
   activeTools(): Promise<any>
+  /**
+   * Look up a delegated subagent task by id. Resolves to `null` when no
+   * such task has been observed in this session.
+   */
+  subagentTask(taskId: string): Promise<any>
+  /**
+   * Return snapshots of every delegated subagent task observed in this
+   * session (including completed and failed ones), oldest first.
+   */
+  subagentTasks(): Promise<any>
+  /** Return snapshots of subagent tasks still in `running` state. */
+  pendingSubagentTasks(): Promise<any>
   /** Cancel a specific run only if it is still the active run. */
   cancelRun(runId: string): Promise<boolean>
   /** Execute a tool by name, bypassing the LLM. */
@@ -1261,9 +1278,9 @@ export declare class Session {
   /** Return compact execution trace events recorded for this session. */
   traceEvents(): any
   /** Return structured verification reports recorded for this session. */
-  verificationReports(): Array<VerificationReport>
+  verificationReports(): any
   /** Add externally produced verification reports to this session. */
-  recordVerificationReports(reports: Array<VerificationReport> | VerificationReport): void
+  recordVerificationReports(reports: any): void
   /** Return a structured verification summary for this session. */
   verificationSummary(): any
   /** Return a concise human-readable verification summary for this session. */
@@ -1369,7 +1386,7 @@ export declare class Session {
   /** Return full model-visible tool definitions currently registered on this session. */
   toolDefinitions(): any
   /** Return a stored tool artifact by URI, or null if it is not retained. */
-  getArtifact(artifactUri: string): ToolArtifact | null
+  getArtifact(artifactUri: string): any
   /**
    * Register a hook for lifecycle event interception.
    *

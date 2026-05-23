@@ -100,6 +100,20 @@ assert.equal(
 )
 assert.match(result.text, /tools=\d+$/, 'custom slash command should receive toolNames in context')
 
+// --- Subagent task query API (PR #3): three new Session methods ---
+{
+  const list = await session.subagentTasks()
+  assert.ok(Array.isArray(list), 'subagentTasks() should resolve to an array')
+  assert.equal(list.length, 0, 'fresh session should have no subagent tasks')
+
+  const pending = await session.pendingSubagentTasks()
+  assert.ok(Array.isArray(pending), 'pendingSubagentTasks() should resolve to an array')
+  assert.equal(pending.length, 0, 'fresh session should have no pending subagent tasks')
+
+  const missing = await session.subagentTask('task-does-not-exist')
+  assert.equal(missing, null, 'unknown subagent task id should resolve to null')
+}
+
 session.close()
 
 console.log('node sdk integration ok')

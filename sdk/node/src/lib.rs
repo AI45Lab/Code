@@ -3098,6 +3098,44 @@ impl Session {
             .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
     }
 
+    /// Look up a delegated subagent task by id. Resolves to `null` when no
+    /// such task has been observed in this session.
+    #[napi(js_name = "subagentTask")]
+    pub async fn subagent_task(&self, task_id: String) -> napi::Result<serde_json::Value> {
+        let session = self.inner.clone();
+        let snapshot = get_runtime()
+            .spawn(async move { session.subagent_task(&task_id).await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
+        serde_json::to_value(snapshot)
+            .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
+    }
+
+    /// Return snapshots of every delegated subagent task observed in this
+    /// session (including completed and failed ones), oldest first.
+    #[napi(js_name = "subagentTasks")]
+    pub async fn subagent_tasks(&self) -> napi::Result<serde_json::Value> {
+        let session = self.inner.clone();
+        let tasks = get_runtime()
+            .spawn(async move { session.subagent_tasks().await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
+        serde_json::to_value(tasks)
+            .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
+    }
+
+    /// Return snapshots of subagent tasks still in `running` state.
+    #[napi(js_name = "pendingSubagentTasks")]
+    pub async fn pending_subagent_tasks(&self) -> napi::Result<serde_json::Value> {
+        let session = self.inner.clone();
+        let tasks = get_runtime()
+            .spawn(async move { session.pending_subagent_tasks().await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
+        serde_json::to_value(tasks)
+            .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
+    }
+
     /// Cancel a specific run only if it is still the active run.
     #[napi(js_name = "cancelRun")]
     pub async fn cancel_run(&self, run_id: String) -> napi::Result<bool> {
