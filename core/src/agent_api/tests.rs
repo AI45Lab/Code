@@ -2389,6 +2389,57 @@ async fn subagent_events_populate_session_tracker() {
 }
 
 #[tokio::test]
+async fn subagent_progress_events_accumulate_in_tracker() {
+    use super::runtime_events::RuntimeEventSink;
+    use crate::agent::AgentEvent;
+
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session = agent
+        .session("/tmp/test-ws-subagent-progress", None)
+        .unwrap();
+
+    let run = session
+        .run_store
+        .create_run(session.session_id(), "parent prompt")
+        .await;
+    let sink = RuntimeEventSink::from_session(&session, &run.id);
+
+    let task_id = "task-progress".to_string();
+    let child_session_id = format!("task-run-{}", task_id);
+
+    sink.observe(&AgentEvent::SubagentStart {
+        task_id: task_id.clone(),
+        session_id: child_session_id.clone(),
+        parent_session_id: session.session_id().to_string(),
+        agent: "explore".to_string(),
+        description: "demo".to_string(),
+    })
+    .await;
+
+    sink.observe(&AgentEvent::SubagentProgress {
+        task_id: task_id.clone(),
+        session_id: child_session_id.clone(),
+        status: "tool_completed".to_string(),
+        metadata: serde_json::json!({ "tool": "bash", "exit_code": 0 }),
+    })
+    .await;
+
+    sink.observe(&AgentEvent::SubagentProgress {
+        task_id: task_id.clone(),
+        session_id: child_session_id.clone(),
+        status: "turn_completed".to_string(),
+        metadata: serde_json::json!({ "turn": 1, "total_tokens": 50 }),
+    })
+    .await;
+
+    let snap = session.subagent_task(&task_id).await.unwrap();
+    assert_eq!(snap.progress.len(), 2);
+    assert_eq!(snap.progress[0].status, "tool_completed");
+    assert_eq!(snap.progress[1].status, "turn_completed");
+    assert_eq!(snap.progress[1].metadata["total_tokens"], 50);
+}
+
+#[tokio::test]
 async fn subagent_tasks_scope_to_parent_session() {
     use super::runtime_events::RuntimeEventSink;
     use crate::agent::AgentEvent;
