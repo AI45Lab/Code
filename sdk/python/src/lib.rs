@@ -1569,6 +1569,14 @@ impl PySession {
         json_string_to_py(py, &json)
     }
 
+    /// Cancel an in-flight subagent task by id. Returns True when a
+    /// cancellation token was found and fired, False when the task id is
+    /// unknown or the task already finished.
+    fn cancel_subagent_task(&self, py: Python<'_>, task_id: String) -> bool {
+        let session = self.inner.clone();
+        py.allow_threads(move || get_runtime().block_on(session.cancel_subagent_task(&task_id)))
+    }
+
     /// Cancel a specific run only if it is still the active run.
     fn cancel_run(&self, py: Python<'_>, run_id: String) -> bool {
         let session = self.inner.clone();

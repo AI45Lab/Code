@@ -93,7 +93,15 @@ pub fn register_task(
     agent_registry: Arc<crate::subagent::AgentRegistry>,
     workspace: String,
 ) {
-    register_task_with_mcp(registry, llm_client, agent_registry, workspace, None, None);
+    register_task_with_mcp(
+        registry,
+        llm_client,
+        agent_registry,
+        workspace,
+        None,
+        None,
+        None,
+    );
 }
 
 /// Register the task delegation tools with optional MCP manager and parent context.
@@ -101,6 +109,8 @@ pub fn register_task(
 /// When `mcp_manager` is provided, delegated child sessions will have access
 /// to all MCP tools from connected servers.
 /// When `parent_context` is provided, child runs inherit parent capabilities.
+/// When `subagent_tracker` is provided, each task registers a
+/// `CancellationToken` against it so callers can cancel by `task_id`.
 pub fn register_task_with_mcp(
     registry: &Arc<ToolRegistry>,
     llm_client: Arc<dyn crate::llm::LlmClient>,
@@ -108,6 +118,7 @@ pub fn register_task_with_mcp(
     workspace: String,
     mcp_manager: Option<Arc<crate::mcp::manager::McpManager>>,
     parent_context: Option<crate::child_run::ChildRunContext>,
+    subagent_tracker: Option<Arc<crate::subagent_task_tracker::InMemorySubagentTaskTracker>>,
 ) {
     use crate::tools::task::{ParallelTaskTool, TaskExecutor, TaskTool};
     let mut executor = match mcp_manager {
@@ -116,6 +127,9 @@ pub fn register_task_with_mcp(
     };
     if let Some(ctx) = parent_context {
         executor = executor.with_parent_context(ctx);
+    }
+    if let Some(tracker) = subagent_tracker {
+        executor = executor.with_subagent_tracker(tracker);
     }
     let executor = Arc::new(executor);
     registry.register_builtin(Arc::new(TaskTool::new(Arc::clone(&executor))));

@@ -2468,3 +2468,59 @@ async fn subagent_tasks_scope_to_parent_session() {
     assert!(session_b.subagent_tasks().await.is_empty());
     assert!(session_b.subagent_task("task-from-a").await.is_none());
 }
+
+#[tokio::test]
+async fn cancel_subagent_task_marks_snapshot_cancelled() {
+    use super::runtime_events::RuntimeEventSink;
+    use crate::agent::AgentEvent;
+    use crate::subagent_task_tracker::SubagentStatus;
+    use tokio_util::sync::CancellationToken;
+
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session = agent.session("/tmp/test-ws-subagent-cancel", None).unwrap();
+    let run = session
+        .run_store
+        .create_run(session.session_id(), "parent")
+        .await;
+    let sink = RuntimeEventSink::from_session(&session, &run.id);
+
+    let task_id = "task-to-cancel".to_string();
+    sink.observe(&AgentEvent::SubagentStart {
+        task_id: task_id.clone(),
+        session_id: format!("task-run-{}", task_id),
+        parent_session_id: session.session_id().to_string(),
+        agent: "explore".to_string(),
+        description: "long task".to_string(),
+    })
+    .await;
+
+    // Simulate what TaskExecutor would do: register a cancellation token
+    // for this in-flight task so the public API has something to fire.
+    let token = CancellationToken::new();
+    session
+        .subagent_tasks
+        .register_canceller(&task_id, token.clone())
+        .await;
+
+    assert!(session.cancel_subagent_task(&task_id).await);
+    assert!(token.is_cancelled());
+
+    let snap = session.subagent_task(&task_id).await.unwrap();
+    assert_eq!(snap.status, SubagentStatus::Cancelled);
+
+    // A late SubagentEnd from the cancelled child must not downgrade.
+    sink.observe(&AgentEvent::SubagentEnd {
+        task_id: task_id.clone(),
+        session_id: format!("task-run-{}", task_id),
+        agent: "explore".to_string(),
+        output: "Task cancelled by caller".to_string(),
+        success: false,
+    })
+    .await;
+    let snap = session.subagent_task(&task_id).await.unwrap();
+    assert_eq!(snap.status, SubagentStatus::Cancelled);
+
+    // Cancelling again or against an unknown id is a no-op.
+    assert!(!session.cancel_subagent_task(&task_id).await);
+    assert!(!session.cancel_subagent_task("task-unknown").await);
+}

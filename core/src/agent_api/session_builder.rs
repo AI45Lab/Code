@@ -103,6 +103,7 @@ pub(super) fn build_agent_session(
     let tool_defs = capabilities.tool_defs;
     let context_providers = capabilities.context_providers;
     let effective_registry = capabilities.skill_registry;
+    let subagent_tasks = capabilities.subagent_tasks;
 
     let prompt_slots = opts
         .prompt_slots
@@ -219,7 +220,7 @@ pub(super) fn build_agent_session(
         cancel_token: Arc::new(tokio::sync::Mutex::new(None)),
         current_run_id: Arc::new(tokio::sync::Mutex::new(None)),
         run_store: Arc::new(crate::run::InMemoryRunStore::new()),
-        subagent_tasks: Arc::new(crate::subagent_task_tracker::InMemorySubagentTaskTracker::new()),
+        subagent_tasks,
         active_tools: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         trace_sink,
         verification_reports: Arc::new(RwLock::new(Vec::new())),

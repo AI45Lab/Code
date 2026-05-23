@@ -35,6 +35,7 @@ pub(super) struct SessionCapabilities {
     pub(super) context_providers: Vec<Arc<dyn ContextProvider>>,
     pub(super) skill_registry: Arc<SkillRegistry>,
     pub(super) agent_registry: Arc<AgentRegistry>,
+    pub(super) subagent_tasks: Arc<crate::subagent_task_tracker::InMemorySubagentTaskTracker>,
 }
 
 pub(super) fn build_session_capabilities(input: SessionCapabilityInput<'_>) -> SessionCapabilities {
@@ -60,12 +61,14 @@ pub(super) fn build_session_capabilities(input: SessionCapabilityInput<'_>) -> S
             .set_search_config(search_config.clone());
     }
 
+    let subagent_tasks = Arc::new(crate::subagent_task_tracker::InMemorySubagentTaskTracker::new());
     let agent_registry = register_task_capability(
         input.code_config,
         input.opts,
         input.workspace,
         Arc::clone(&input.llm_client),
         &tool_executor,
+        Arc::clone(&subagent_tasks),
     );
 
     // Register generate_object tool (structured JSON output)
@@ -90,6 +93,7 @@ pub(super) fn build_session_capabilities(input: SessionCapabilityInput<'_>) -> S
         context_providers,
         skill_registry,
         agent_registry,
+        subagent_tasks,
     }
 }
 
@@ -136,6 +140,7 @@ fn register_task_capability(
     workspace: &Path,
     llm_client: Arc<dyn LlmClient>,
     tool_executor: &Arc<ToolExecutor>,
+    subagent_tasks: Arc<crate::subagent_task_tracker::InMemorySubagentTaskTracker>,
 ) -> Arc<AgentRegistry> {
     use crate::child_run::ChildRunContext;
     use crate::subagent::load_agents_from_dir;
@@ -177,6 +182,7 @@ fn register_task_capability(
         workspace.display().to_string(),
         opts.mcp_manager.clone(),
         Some(parent_context),
+        Some(subagent_tasks),
     );
     registry
 }

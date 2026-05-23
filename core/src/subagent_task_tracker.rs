@@ -9,6 +9,7 @@ use crate::agent::AgentEvent;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -16,6 +17,7 @@ pub enum SubagentStatus {
     Running,
     Completed,
     Failed,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,11 +49,50 @@ pub struct SubagentTaskSnapshot {
 #[derive(Debug, Default)]
 pub struct InMemorySubagentTaskTracker {
     tasks: RwLock<HashMap<String, SubagentTaskSnapshot>>,
+    cancellers: RwLock<HashMap<String, CancellationToken>>,
 }
 
 impl InMemorySubagentTaskTracker {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Register a `CancellationToken` for a running task so callers can
+    /// trigger cancellation through `cancel(task_id)`. The task executor
+    /// is expected to remove the entry on exit via `clear_canceller`.
+    pub async fn register_canceller(&self, task_id: &str, token: CancellationToken) {
+        self.cancellers
+            .write()
+            .await
+            .insert(task_id.to_string(), token);
+    }
+
+    pub async fn clear_canceller(&self, task_id: &str) {
+        self.cancellers.write().await.remove(task_id);
+    }
+
+    /// Fire the registered token and mark the snapshot as `Cancelled`.
+    /// Returns `true` if a token was found (caller can interpret as
+    /// "cancellation initiated"), `false` if the task id was unknown or
+    /// the task already finished. The eventual `SubagentEnd` event won't
+    /// overwrite the Cancelled status — see `record_event`.
+    pub async fn cancel(&self, task_id: &str) -> bool {
+        let token = self.cancellers.write().await.remove(task_id);
+        match token {
+            Some(token) => {
+                token.cancel();
+                let now = now_ms();
+                let mut tasks = self.tasks.write().await;
+                if let Some(entry) = tasks.get_mut(task_id) {
+                    if entry.status == SubagentStatus::Running {
+                        entry.status = SubagentStatus::Cancelled;
+                        entry.updated_ms = now;
+                    }
+                }
+                true
+            }
+            None => false,
+        }
     }
 
     /// Apply a single agent event to the tracker. Non-subagent events are ignored.
@@ -148,11 +189,16 @@ impl InMemorySubagentTaskTracker {
                         success: None,
                         progress: Vec::new(),
                     });
-                entry.status = if *success {
-                    SubagentStatus::Completed
-                } else {
-                    SubagentStatus::Failed
-                };
+                // Preserve a pre-set Cancelled status (set by `cancel()`)
+                // — a late SubagentEnd from the cancelled child loop is
+                // expected and must not downgrade the terminal state.
+                if entry.status != SubagentStatus::Cancelled {
+                    entry.status = if *success {
+                        SubagentStatus::Completed
+                    } else {
+                        SubagentStatus::Failed
+                    };
+                }
                 entry.updated_ms = now;
                 entry.finished_ms = Some(now);
                 entry.output = Some(output.clone());
@@ -332,5 +378,65 @@ mod tests {
             })
             .await;
         assert!(tracker.list().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancel_fires_token_and_marks_snapshot_cancelled() {
+        let tracker = InMemorySubagentTaskTracker::new();
+        tracker
+            .record_event(&start_event("task-c", "parent", "child"))
+            .await;
+
+        let token = CancellationToken::new();
+        tracker.register_canceller("task-c", token.clone()).await;
+        assert!(!token.is_cancelled());
+
+        let fired = tracker.cancel("task-c").await;
+        assert!(fired, "cancel should report success");
+        assert!(token.is_cancelled(), "registered token should be triggered");
+
+        let snap = tracker.get("task-c").await.unwrap();
+        assert_eq!(snap.status, SubagentStatus::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn cancel_returns_false_for_unknown_task() {
+        let tracker = InMemorySubagentTaskTracker::new();
+        assert!(!tracker.cancel("task-does-not-exist").await);
+    }
+
+    #[tokio::test]
+    async fn late_subagent_end_does_not_downgrade_cancelled_status() {
+        let tracker = InMemorySubagentTaskTracker::new();
+        tracker
+            .record_event(&start_event("task-d", "parent", "child"))
+            .await;
+        let token = CancellationToken::new();
+        tracker.register_canceller("task-d", token).await;
+        assert!(tracker.cancel("task-d").await);
+
+        // The cancelled child loop will still emit a (likely failed)
+        // SubagentEnd. The terminal status should remain Cancelled.
+        tracker
+            .record_event(&end_event("task-d", "child", false))
+            .await;
+        let snap = tracker.get("task-d").await.unwrap();
+        assert_eq!(snap.status, SubagentStatus::Cancelled);
+        assert!(snap.finished_ms.is_some());
+        assert_eq!(snap.success, Some(false));
+    }
+
+    #[tokio::test]
+    async fn clear_canceller_disarms_future_cancel_calls() {
+        let tracker = InMemorySubagentTaskTracker::new();
+        tracker
+            .record_event(&start_event("task-e", "parent", "child"))
+            .await;
+        let token = CancellationToken::new();
+        tracker.register_canceller("task-e", token.clone()).await;
+        tracker.clear_canceller("task-e").await;
+
+        assert!(!tracker.cancel("task-e").await);
+        assert!(!token.is_cancelled());
     }
 }

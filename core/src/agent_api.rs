@@ -594,6 +594,15 @@ impl AgentSession {
             .collect()
     }
 
+    /// Cancel an in-flight delegated subagent task by id. Returns `true`
+    /// when a cancellation token was found and fired, `false` when the
+    /// task id is unknown or the task has already finished. The eventual
+    /// `SubagentEnd` from the cancelled child loop won't downgrade the
+    /// terminal status — it stays `Cancelled`.
+    pub async fn cancel_subagent_task(&self, task_id: &str) -> bool {
+        self.subagent_tasks.cancel(task_id).await
+    }
+
     /// Return a snapshot of the session's conversation history.
     pub fn history(&self) -> Vec<Message> {
         SessionView::from_session(self).history()

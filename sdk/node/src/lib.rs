@@ -3136,6 +3136,18 @@ impl Session {
             .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
     }
 
+    /// Cancel an in-flight subagent task by id. Resolves to `true` when a
+    /// cancellation token was found and fired, `false` when the task id
+    /// is unknown or the task already finished.
+    #[napi(js_name = "cancelSubagentTask")]
+    pub async fn cancel_subagent_task(&self, task_id: String) -> napi::Result<bool> {
+        let session = self.inner.clone();
+        get_runtime()
+            .spawn(async move { session.cancel_subagent_task(&task_id).await })
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))
+    }
+
     /// Cancel a specific run only if it is still the active run.
     #[napi(js_name = "cancelRun")]
     pub async fn cancel_run(&self, run_id: String) -> napi::Result<bool> {

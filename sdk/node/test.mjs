@@ -112,6 +112,9 @@ assert.match(result.text, /tools=\d+$/, 'custom slash command should receive too
 
   const missing = await session.subagentTask('task-does-not-exist')
   assert.equal(missing, null, 'unknown subagent task id should resolve to null')
+
+  const cancelled = await session.cancelSubagentTask('task-does-not-exist')
+  assert.equal(cancelled, false, 'cancelling an unknown subagent task id should resolve to false')
 }
 
 session.close()

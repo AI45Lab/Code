@@ -51,6 +51,11 @@ def main() -> None:
     missing = session.subagent_task("task-does-not-exist")
     assert missing is None, f"unknown subagent task id should return None, got {missing!r}"
 
+    cancelled = session.cancel_subagent_task("task-does-not-exist")
+    assert cancelled is False, (
+        f"cancelling unknown subagent task id should return False, got {cancelled!r}"
+    )
+
     session.close()
     print("python sdk subagent query api ok")
 

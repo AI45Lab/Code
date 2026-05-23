@@ -194,6 +194,9 @@ pub struct TaskExecutor {
     /// Parent capabilities to inherit into child runs.
     parent_context: Option<crate::child_run::ChildRunContext>,
     max_parallel_tasks: usize,
+    /// Optional shared tracker — when present each task registers a
+    /// `CancellationToken` so callers can cancel by `task_id`.
+    subagent_tracker: Option<Arc<crate::subagent_task_tracker::InMemorySubagentTaskTracker>>,
 }
 
 impl TaskExecutor {
@@ -210,6 +213,7 @@ impl TaskExecutor {
             mcp_manager: None,
             parent_context: None,
             max_parallel_tasks: crate::agent::DEFAULT_MAX_PARALLEL_TASKS,
+            subagent_tracker: None,
         }
     }
 
@@ -227,6 +231,7 @@ impl TaskExecutor {
             mcp_manager: Some(mcp_manager),
             parent_context: None,
             max_parallel_tasks: crate::agent::DEFAULT_MAX_PARALLEL_TASKS,
+            subagent_tracker: None,
         }
     }
 
@@ -241,6 +246,17 @@ impl TaskExecutor {
 
     pub fn with_max_parallel_tasks(mut self, max_parallel_tasks: usize) -> Self {
         self.max_parallel_tasks = max_parallel_tasks.max(1);
+        self
+    }
+
+    /// Share a tracker with this executor. When set, each task registers
+    /// a `CancellationToken` against the tracker so the parent session
+    /// can cancel by `task_id`.
+    pub fn with_subagent_tracker(
+        mut self,
+        tracker: Arc<crate::subagent_task_tracker::InMemorySubagentTaskTracker>,
+    ) -> Self {
+        self.subagent_tracker = Some(tracker);
         self
     }
 
@@ -382,13 +398,35 @@ impl TaskExecutor {
             None
         };
 
+        // Register a CancellationToken with the tracker (if shared) so the
+        // parent session's `cancel_subagent_task` can interrupt this run.
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+        if let Some(ref tracker) = self.subagent_tracker {
+            tracker
+                .register_canceller(&task_id, cancel_token.clone())
+                .await;
+        }
+
         let (output, success) = match agent_loop
-            .execute(&[], &params.prompt, child_event_tx)
+            .execute_with_session(
+                &[],
+                &params.prompt,
+                Some(&session_id),
+                child_event_tx,
+                Some(&cancel_token),
+            )
             .await
         {
             Ok(result) => (result.text, true),
+            Err(e) if cancel_token.is_cancelled() => {
+                (format!("Task cancelled by caller: {}", e), false)
+            }
             Err(e) => (format!("Task failed: {}", e), false),
         };
+
+        if let Some(ref tracker) = self.subagent_tracker {
+            tracker.clear_canceller(&task_id).await;
+        }
 
         if let Some(ref tx) = event_tx {
             let _ = tx.send(AgentEvent::SubagentEnd {

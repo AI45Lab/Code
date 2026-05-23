@@ -1148,6 +1148,12 @@ export declare class Session {
   subagentTasks(): Promise<any>
   /** Return snapshots of subagent tasks still in `running` state. */
   pendingSubagentTasks(): Promise<any>
+  /**
+   * Cancel an in-flight subagent task by id. Resolves to `true` when a
+   * cancellation token was found and fired, `false` when the task id
+   * is unknown or the task already finished.
+   */
+  cancelSubagentTask(taskId: string): Promise<boolean>
   /** Cancel a specific run only if it is still the active run. */
   cancelRun(runId: string): Promise<boolean>
   /** Execute a tool by name, bypassing the LLM. */
