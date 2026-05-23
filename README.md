@@ -33,6 +33,29 @@ Intent -> Context -> Action -> Observation -> Verification -> Compaction
 
 Everything else is an extension of that loop.
 
+### What's new in 3.2
+
+- **Subagent task tracker** — every delegated child run is now observable
+  through a queryable view fed by the existing `subagent_start` /
+  `subagent_progress` / `subagent_end` event stream. The new
+  `AgentSession::subagent_task(id)`, `subagent_tasks()`, and
+  `pending_subagent_tasks()` APIs (mirrored on Node and Python) let
+  dashboards introspect child runs without scanning `run_events()`.
+- **Mid-task progress milestones** — the child loop forwarder now
+  synthesizes `SubagentProgress` events for `tool_completed` and
+  `turn_completed`, so callers see intermediate state instead of just
+  Start → End.
+- **Cancel by task id** — `AgentSession::cancel_subagent_task(id)`
+  (and `session.cancelSubagentTask` / `session.cancel_subagent_task`
+  on the SDKs) interrupts an in-flight delegated run without
+  cancelling the parent. A late `SubagentEnd` from a cancelled child
+  does not downgrade the terminal status — it stays `Cancelled`.
+
+Full migration notes are in [CHANGELOG.md](./CHANGELOG.md). The
+`TaskExecutor` signature additions and the `SubagentStatus` variant
+addition are the only breaking changes; `SubagentStatus` is now
+`#[non_exhaustive]` so future variants are non-breaking.
+
 ### What's new in 3.0
 
 - **Cloud-native workspace** — `S3WorkspaceBackend` with ETag
@@ -1114,6 +1137,20 @@ Core delegation primitives:
 
 - `task` — run one focused delegated child run
 - `parallel_task` — run independent delegated child runs concurrently
+
+Once a child run is in flight, the parent session can observe and steer
+it through the subagent task tracker:
+
+| Operation | Rust | Node | Python |
+|---|---|---|---|
+| Look up a task by id | `session.subagent_task(id)` | `session.subagentTask(id)` | `session.subagent_task(id)` |
+| List subagent tasks (this session) | `session.subagent_tasks()` | `session.subagentTasks()` | `session.subagent_tasks()` |
+| List only in-flight subagent tasks | `session.pending_subagent_tasks()` | `session.pendingSubagentTasks()` | `session.pending_subagent_tasks()` |
+| Observe mid-task milestones | `subagent_progress` in `run_events()` | same | same |
+| Cancel an in-flight task | `session.cancel_subagent_task(id)` | `session.cancelSubagentTask(id)` | `session.cancel_subagent_task(id)` |
+
+The tracker is a materialized view over the existing event stream; the
+stream remains the authoritative record.
 
 Built-in subagents are available through these primitives and through automatic
 delegation:

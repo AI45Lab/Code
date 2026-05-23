@@ -5,6 +5,81 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.0] - 2026-05-24
+
+### Added
+
+- Added a queryable subagent task tracker so callers can observe delegated
+  child runs by `task_id` instead of scanning `run_events()`. The tracker is
+  a materialized view over the existing `SubagentStart` / `SubagentProgress`
+  / `SubagentEnd` event stream — the stream remains the authoritative record.
+- Added three new APIs on `AgentSession` (and mirrored bindings on the Node
+  and Python SDKs):
+  - `subagent_task(task_id)` — look up a task snapshot by id.
+  - `subagent_tasks()` — list every delegated subagent task observed in this
+    session, oldest first.
+  - `pending_subagent_tasks()` — list only tasks still in `running` state.
+- Added emission of `SubagentProgress` events from the child loop forwarder.
+  Two milestones are surfaced today: `status = "tool_completed"` after each
+  child tool ends (metadata: tool, exit_code, output_bytes, optional
+  error_kind) and `status = "turn_completed"` after each child LLM turn
+  (metadata: turn, prompt/completion/total tokens). Noisy events (TextDelta,
+  ToolStart, ToolOutputDelta, nested subagent events) are intentionally not
+  translated; consumers needing token-level streaming should subscribe to the
+  raw event stream directly.
+- Added `SubagentStatus::Cancelled` and `AgentSession::cancel_subagent_task(id)`
+  for interrupting in-flight delegated child runs without cancelling the parent
+  run. Bindings on both SDKs (`session.cancelSubagentTask(taskId)` /
+  `session.cancel_subagent_task(task_id)`). A late `SubagentEnd` from a
+  cancelled child does not downgrade the terminal status — it stays
+  `Cancelled`.
+- Added `SubagentTaskSnapshot` carrying `task_id`, `parent_session_id`,
+  `child_session_id`, `agent`, `description`, `status`, `started_ms`,
+  `updated_ms`, optional `finished_ms` / `output` / `success`, and a
+  `progress` log. The Cancellation path also propagates a real cancellation
+  token into the child loop via `AgentLoop::execute_with_session`, so the
+  signal honors existing LLM-streaming yield points.
+- Added `InMemorySubagentTaskTracker` and `SubagentProgressEntry` to the
+  public crate-root re-exports of `a3s-code-core` alongside the existing
+  `SubagentStatus` / `SubagentTaskSnapshot` types.
+
+### Changed
+
+- Marked `SubagentStatus` `#[non_exhaustive]` so future variants can be added
+  without a major version bump.
+- Reshaped the Node SDK type layout to survive `napi-rs` regeneration. The
+  build now writes generated declarations to `generated.d.ts`; hand-authored
+  types that mirror JSON wire shapes (`ToolErrorKind`, `VerificationStatus`,
+  `VerificationCheck`, `VerificationReport`, `ToolArtifact`) now live in
+  `extra-types.d.ts`; the published `index.d.ts` is a small hand-authored
+  aggregator that re-exports both. The `types` field in `package.json` still
+  points at `index.d.ts`, so consumer imports are unchanged. A new
+  `npm run test:types` script type-checks the aggregator to guard against
+  future regressions.
+
+### Fixed
+
+- Fixed `TaskExecutor::execute` and `execute_background` so the emitted
+  `SubagentStart` carries the real parent session id (previously
+  `String::new()`), and `execute_background` returns the same `task_id`
+  that appears in lifecycle events (previously a throwaway id). The
+  background path also pre-emits `SubagentStart` synchronously so callers
+  that query the tracker immediately after scheduling do not race the
+  spawned task.
+
+### Breaking
+
+- `TaskExecutor::execute`, `execute_parallel`, and `execute_background` now
+  take an additional `parent_session_id: Option<&str>` (or
+  `Option<String>` for the background variant) so the emitted lifecycle
+  events can be correctly associated with the parent session. Direct
+  callers of `TaskExecutor` need to pass `None` (or the parent session id)
+  to keep current behavior.
+- `register_task_with_mcp` gained a trailing
+  `subagent_tracker: Option<Arc<InMemorySubagentTaskTracker>>` parameter so
+  the session bootstrap path can share a single tracker Arc with the
+  executor and the live `AgentSession`. Pass `None` to opt out.
+
 ## [3.1.0] - 2026-05-23
 
 ### Added
