@@ -191,12 +191,32 @@ impl TaskExecutor {
     }
 
     /// Execute a task by spawning an isolated child AgentLoop.
+    ///
+    /// `parent_session_id` flows into the emitted `SubagentStart`/`SubagentEnd`
+    /// events so dashboards can associate child runs with the parent session.
     pub async fn execute(
         &self,
         params: TaskParams,
         event_tx: Option<broadcast::Sender<AgentEvent>>,
+        parent_session_id: Option<&str>,
     ) -> Result<TaskResult> {
         let task_id = format!("task-{}", uuid::Uuid::new_v4());
+        self.execute_with_task_id(task_id, params, event_tx, parent_session_id, true)
+            .await
+    }
+
+    /// Execute a task using a caller-supplied task id. Used by `execute_background`
+    /// so the synchronously-returned task id matches the one in lifecycle events.
+    /// When `emit_start` is `false` the caller is responsible for emitting
+    /// `SubagentStart` themselves (e.g. to avoid a race against a tracker query).
+    pub async fn execute_with_task_id(
+        &self,
+        task_id: String,
+        params: TaskParams,
+        event_tx: Option<broadcast::Sender<AgentEvent>>,
+        parent_session_id: Option<&str>,
+        emit_start: bool,
+    ) -> Result<TaskResult> {
         let session_id = format!("task-run-{}", task_id);
 
         let agent = self
@@ -204,14 +224,16 @@ impl TaskExecutor {
             .get(&params.agent)
             .context(format!("Unknown agent type: '{}'", params.agent))?;
 
-        if let Some(ref tx) = event_tx {
-            let _ = tx.send(AgentEvent::SubagentStart {
-                task_id: task_id.clone(),
-                session_id: session_id.clone(),
-                parent_session_id: String::new(),
-                agent: params.agent.clone(),
-                description: params.description.clone(),
-            });
+        if emit_start {
+            if let Some(ref tx) = event_tx {
+                let _ = tx.send(AgentEvent::SubagentStart {
+                    task_id: task_id.clone(),
+                    session_id: session_id.clone(),
+                    parent_session_id: parent_session_id.unwrap_or_default().to_string(),
+                    agent: params.agent.clone(),
+                    description: params.description.clone(),
+                });
+            }
         }
 
         // Build a child ToolExecutor. Task tools are intentionally omitted
@@ -324,18 +346,44 @@ impl TaskExecutor {
 
     /// Execute a task in the background.
     ///
-    /// Returns immediately with the task ID. Use events to track progress.
+    /// Returns immediately with the task ID; the same id is used in the emitted
+    /// `SubagentStart`/`SubagentEnd` events so callers can correlate. Pre-emits
+    /// `SubagentStart` synchronously when an event channel is available so a
+    /// caller that queries the subagent task tracker right after this call
+    /// observes the task in `Running` state without a race window.
     pub fn execute_background(
         self: Arc<Self>,
         params: TaskParams,
         event_tx: Option<broadcast::Sender<AgentEvent>>,
+        parent_session_id: Option<String>,
     ) -> String {
         let task_id = format!("task-{}", uuid::Uuid::new_v4());
-        let task_id_clone = task_id.clone();
+        let session_id = format!("task-run-{}", task_id);
 
+        if let Some(ref tx) = event_tx {
+            let _ = tx.send(AgentEvent::SubagentStart {
+                task_id: task_id.clone(),
+                session_id,
+                parent_session_id: parent_session_id.clone().unwrap_or_default(),
+                agent: params.agent.clone(),
+                description: params.description.clone(),
+            });
+        }
+
+        let task_id_for_spawn = task_id.clone();
+        let task_id_for_log = task_id.clone();
         tokio::spawn(async move {
-            if let Err(e) = self.execute(params, event_tx).await {
-                tracing::error!("Background task {} failed: {}", task_id_clone, e);
+            if let Err(e) = self
+                .execute_with_task_id(
+                    task_id_for_spawn,
+                    params,
+                    event_tx,
+                    parent_session_id.as_deref(),
+                    false,
+                )
+                .await
+            {
+                tracing::error!("Background task {} failed: {}", task_id_for_log, e);
             }
         });
 
@@ -350,20 +398,26 @@ impl TaskExecutor {
         self: &Arc<Self>,
         tasks: Vec<TaskParams>,
         event_tx: Option<broadcast::Sender<AgentEvent>>,
+        parent_session_id: Option<&str>,
     ) -> Vec<TaskResult> {
         let fallback_agents = tasks
             .iter()
             .map(|params| params.agent.clone())
             .collect::<Vec<_>>();
         let executor = Arc::clone(self);
+        let parent_session_id = parent_session_id.map(|s| s.to_string());
         let results = crate::ordered_parallel::run_ordered_parallel_with_limit(
             tasks,
             self.max_parallel_tasks,
             move |_idx, params| {
                 let executor = Arc::clone(&executor);
                 let tx = event_tx.clone();
+                let parent = parent_session_id.clone();
                 async move {
-                    match executor.execute(params.clone(), tx).await {
+                    match executor
+                        .execute(params.clone(), tx, parent.as_deref())
+                        .await
+                    {
                         Ok(result) => result,
                         Err(e) => TaskResult {
                             output: format!("Task failed: {}", e),
@@ -477,8 +531,11 @@ impl Tool for TaskTool {
             serde_json::from_value(args.clone()).context("Invalid task parameters")?;
 
         if params.background {
-            let task_id =
-                Arc::clone(&self.executor).execute_background(params, ctx.agent_event_tx.clone());
+            let task_id = Arc::clone(&self.executor).execute_background(
+                params,
+                ctx.agent_event_tx.clone(),
+                ctx.session_id.clone(),
+            );
             return Ok(ToolOutput::success(format!(
                 "Task started in background. Task ID: {}",
                 task_id
@@ -487,7 +544,11 @@ impl Tool for TaskTool {
 
         let result = self
             .executor
-            .execute(params, ctx.agent_event_tx.clone())
+            .execute(
+                params,
+                ctx.agent_event_tx.clone(),
+                ctx.session_id.as_deref(),
+            )
             .await?;
         let (content, truncated) = format_task_result_for_context(&result);
         let metadata = serde_json::json!({
@@ -608,7 +669,11 @@ impl Tool for ParallelTaskTool {
 
         let results = self
             .executor
-            .execute_parallel(params.tasks, ctx.agent_event_tx.clone())
+            .execute_parallel(
+                params.tasks,
+                ctx.agent_event_tx.clone(),
+                ctx.session_id.as_deref(),
+            )
             .await;
 
         // Format results with compact per-task excerpts for parent context.
@@ -1576,6 +1641,7 @@ mod tests {
                     max_steps: Some(3),
                 },
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -1628,6 +1694,7 @@ mod tests {
                     max_steps: Some(3),
                 },
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -1675,6 +1742,7 @@ mod tests {
                     background: false,
                     max_steps: Some(3),
                 },
+                None,
                 None,
             )
             .await
@@ -1730,6 +1798,7 @@ mod tests {
                     max_steps: Some(2),
                 },
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -1776,7 +1845,7 @@ mod tests {
 
         let results = tokio::time::timeout(
             Duration::from_secs(2),
-            executor.execute_parallel(tasks, None),
+            executor.execute_parallel(tasks, None, None),
         )
         .await
         .expect("parallel children should reach the barrier and complete");
@@ -1816,7 +1885,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        let results = executor.execute_parallel(tasks, None).await;
+        let results = executor.execute_parallel(tasks, None, None).await;
 
         assert_eq!(results.len(), 5);
         assert!(results.iter().all(|result| result.success));
@@ -1849,7 +1918,7 @@ mod tests {
             },
         ];
 
-        let results = executor.execute_parallel(tasks, None).await;
+        let results = executor.execute_parallel(tasks, None, None).await;
 
         assert_eq!(results.len(), 2);
         assert!(!results[0].success);
@@ -1887,7 +1956,7 @@ mod tests {
             },
         ];
 
-        let results = executor.execute_parallel(tasks, Some(tx)).await;
+        let results = executor.execute_parallel(tasks, Some(tx), None).await;
         assert_eq!(results.len(), 2);
         tokio::time::sleep(Duration::from_millis(20)).await;
 
@@ -2002,7 +2071,7 @@ mod tests {
             },
         ];
 
-        let results = executor.execute_parallel(tasks, None).await;
+        let results = executor.execute_parallel(tasks, None, None).await;
         assert_eq!(results.len(), 2);
 
         for result in &results {

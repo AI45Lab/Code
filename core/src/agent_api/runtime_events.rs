@@ -47,6 +47,7 @@ pub(super) struct RuntimeEventSink {
     session_id: String,
     hook_executor: Option<Arc<dyn crate::hooks::HookExecutor>>,
     active_tools: ActiveToolMap,
+    subagent_tasks: Arc<crate::subagent_task_tracker::InMemorySubagentTaskTracker>,
 }
 
 impl RuntimeEventSink {
@@ -57,6 +58,7 @@ impl RuntimeEventSink {
             session.session_id.clone(),
             session.ahp_executor.clone(),
             Arc::clone(&session.active_tools),
+            Arc::clone(&session.subagent_tasks),
         )
     }
 
@@ -66,6 +68,7 @@ impl RuntimeEventSink {
         session_id: String,
         hook_executor: Option<Arc<dyn crate::hooks::HookExecutor>>,
         active_tools: ActiveToolMap,
+        subagent_tasks: Arc<crate::subagent_task_tracker::InMemorySubagentTaskTracker>,
     ) -> Self {
         Self {
             run_store,
@@ -73,6 +76,7 @@ impl RuntimeEventSink {
             session_id,
             hook_executor,
             active_tools,
+            subagent_tasks,
         }
     }
 
@@ -106,7 +110,7 @@ impl RuntimeEventSink {
         })
     }
 
-    async fn observe(&self, event: &AgentEvent) {
+    pub(super) async fn observe(&self, event: &AgentEvent) {
         let _ = self
             .run_store
             .record_event(&self.run_id, event.clone())
@@ -116,6 +120,7 @@ impl RuntimeEventSink {
                 .record_agent_event(event, &self.run_id, &self.session_id)
                 .await;
         }
+        self.subagent_tasks.record_event(event).await;
         self.apply(event).await;
     }
 
@@ -200,6 +205,7 @@ mod tests {
             "session-1".to_string(),
             None,
             Arc::clone(&active_tools),
+            Arc::new(crate::subagent_task_tracker::InMemorySubagentTaskTracker::new()),
         );
 
         sink.observe(&AgentEvent::ToolStart {
@@ -239,6 +245,7 @@ mod tests {
             "session-1".to_string(),
             None,
             active_tools(),
+            Arc::new(crate::subagent_task_tracker::InMemorySubagentTaskTracker::new()),
         );
 
         sink.observe(&AgentEvent::TextDelta {

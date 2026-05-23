@@ -2324,3 +2324,96 @@ fn test_session_command_is_available_from_queue_module() {
     use crate::queue::SessionCommand;
     let _ = std::marker::PhantomData::<Box<dyn SessionCommand>>;
 }
+
+#[tokio::test]
+async fn subagent_events_populate_session_tracker() {
+    use super::runtime_events::RuntimeEventSink;
+    use crate::agent::AgentEvent;
+    use crate::subagent_task_tracker::SubagentStatus;
+
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session = agent
+        .session("/tmp/test-ws-subagent-tracker", None)
+        .unwrap();
+
+    // Drive a synthetic subagent lifecycle through the session's runtime sink.
+    let run = session
+        .run_store
+        .create_run(session.session_id(), "parent prompt")
+        .await;
+    let sink = RuntimeEventSink::from_session(&session, &run.id);
+
+    let task_id = "task-test-1".to_string();
+    let child_session_id = format!("task-run-{}", task_id);
+
+    sink.observe(&AgentEvent::SubagentStart {
+        task_id: task_id.clone(),
+        session_id: child_session_id.clone(),
+        parent_session_id: session.session_id().to_string(),
+        agent: "explore".to_string(),
+        description: "demo delegation".to_string(),
+    })
+    .await;
+
+    let snap = session
+        .subagent_task(&task_id)
+        .await
+        .expect("running task should be visible");
+    assert_eq!(snap.status, SubagentStatus::Running);
+    assert_eq!(snap.parent_session_id, session.session_id());
+    assert_eq!(snap.child_session_id, child_session_id);
+    assert_eq!(snap.agent, "explore");
+    assert!(snap.finished_ms.is_none());
+
+    let pending = session.pending_subagent_tasks().await;
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].task_id, task_id);
+
+    sink.observe(&AgentEvent::SubagentEnd {
+        task_id: task_id.clone(),
+        session_id: child_session_id,
+        agent: "explore".to_string(),
+        output: "found things".to_string(),
+        success: true,
+    })
+    .await;
+
+    let snap = session.subagent_task(&task_id).await.unwrap();
+    assert_eq!(snap.status, SubagentStatus::Completed);
+    assert_eq!(snap.success, Some(true));
+    assert_eq!(snap.output.as_deref(), Some("found things"));
+    assert!(snap.finished_ms.is_some());
+
+    assert!(session.pending_subagent_tasks().await.is_empty());
+    assert_eq!(session.subagent_tasks().await.len(), 1);
+}
+
+#[tokio::test]
+async fn subagent_tasks_scope_to_parent_session() {
+    use super::runtime_events::RuntimeEventSink;
+    use crate::agent::AgentEvent;
+
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session_a = agent.session("/tmp/test-ws-subagent-a", None).unwrap();
+    let session_b = agent.session("/tmp/test-ws-subagent-b", None).unwrap();
+
+    let run = session_a
+        .run_store
+        .create_run(session_a.session_id(), "p")
+        .await;
+    let sink = RuntimeEventSink::from_session(&session_a, &run.id);
+
+    sink.observe(&AgentEvent::SubagentStart {
+        task_id: "task-from-a".to_string(),
+        session_id: "task-run-task-from-a".to_string(),
+        parent_session_id: session_a.session_id().to_string(),
+        agent: "explore".to_string(),
+        description: "isolated".to_string(),
+    })
+    .await;
+
+    // session A sees the task; session B has its own (empty) tracker.
+    assert_eq!(session_a.subagent_tasks().await.len(), 1);
+    assert!(session_b.subagent_tasks().await.is_empty());
+    assert!(session_b.subagent_task("task-from-a").await.is_none());
+}

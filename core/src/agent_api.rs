@@ -429,6 +429,8 @@ pub struct AgentSession {
     current_run_id: Arc<tokio::sync::Mutex<Option<String>>>,
     /// In-memory run snapshots and event replay buffer for this session.
     run_store: Arc<crate::run::InMemoryRunStore>,
+    /// Materialized view of delegated subagent task lifecycle, populated from runtime events.
+    subagent_tasks: Arc<crate::subagent_task_tracker::InMemorySubagentTaskTracker>,
     /// Currently executing tools observed from runtime events.
     active_tools: Arc<tokio::sync::RwLock<HashMap<String, ActiveToolState>>>,
     /// Compact execution traces for this session.
@@ -562,6 +564,34 @@ impl AgentSession {
     /// Return active tool calls observed for the currently running operation.
     pub async fn active_tools(&self) -> Vec<crate::run::ActiveToolSnapshot> {
         SessionView::from_session(self).active_tools().await
+    }
+
+    /// Look up a delegated subagent task by id. Returns `None` if no such task
+    /// has been observed in this session.
+    pub async fn subagent_task(
+        &self,
+        task_id: &str,
+    ) -> Option<crate::subagent_task_tracker::SubagentTaskSnapshot> {
+        self.subagent_tasks.get(task_id).await
+    }
+
+    /// Return snapshots of every delegated subagent task observed in this
+    /// session (including completed and failed ones), oldest first.
+    pub async fn subagent_tasks(&self) -> Vec<crate::subagent_task_tracker::SubagentTaskSnapshot> {
+        self.subagent_tasks.list_for_parent(&self.session_id).await
+    }
+
+    /// Return snapshots of subagent tasks still in `Running` state.
+    pub async fn pending_subagent_tasks(
+        &self,
+    ) -> Vec<crate::subagent_task_tracker::SubagentTaskSnapshot> {
+        use crate::subagent_task_tracker::SubagentStatus;
+        self.subagent_tasks
+            .list_for_parent(&self.session_id)
+            .await
+            .into_iter()
+            .filter(|task| task.status == SubagentStatus::Running)
+            .collect()
     }
 
     /// Return a snapshot of the session's conversation history.

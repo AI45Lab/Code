@@ -219,6 +219,7 @@ pub(super) fn build_agent_session(
         cancel_token: Arc::new(tokio::sync::Mutex::new(None)),
         current_run_id: Arc::new(tokio::sync::Mutex::new(None)),
         run_store: Arc::new(crate::run::InMemoryRunStore::new()),
+        subagent_tasks: Arc::new(crate::subagent_task_tracker::InMemorySubagentTaskTracker::new()),
         active_tools: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         trace_sink,
         verification_reports: Arc::new(RwLock::new(Vec::new())),

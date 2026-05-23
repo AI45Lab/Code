@@ -145,7 +145,7 @@ async fn test_task_executor_child_run_inherits_permissions() {
     };
 
     let result = executor
-        .execute(params, None)
+        .execute(params, None, None)
         .await
         .expect("TaskExecutor::execute should not return Err");
 
@@ -226,7 +226,7 @@ async fn test_parallel_task_executor_inherits_permissions() {
         },
     ];
 
-    let results = executor.execute_parallel(tasks, None).await;
+    let results = executor.execute_parallel(tasks, None, None).await;
 
     assert_eq!(results.len(), 2, "should have 2 results");
 

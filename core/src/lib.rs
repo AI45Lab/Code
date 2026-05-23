@@ -106,6 +106,7 @@ pub(crate) mod session_lane_queue;
 pub mod skills;
 pub mod store;
 pub mod subagent;
+pub mod subagent_task_tracker;
 pub mod telemetry;
 #[cfg(feature = "telemetry")]
 pub mod telemetry_otel;
@@ -137,6 +138,9 @@ pub use run::{
 pub use subagent::{
     AgentDefinition, AgentRegistry, CattleAgentKind, CattleAgentSpec, ConfirmationInheritance,
     WorkerAgentKind, WorkerAgentSpec,
+};
+pub use subagent_task_tracker::{
+    InMemorySubagentTaskTracker, SubagentProgressEntry, SubagentStatus, SubagentTaskSnapshot,
 };
 pub use tools::ToolErrorKind;
 pub use workspace::{
