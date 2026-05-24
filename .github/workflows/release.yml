@@ -119,12 +119,24 @@ jobs:
     secrets: inherit
 
   # ───────────────────────────────────────────────
-  # Build and publish Python native SDK (reusable)
+  # Build native Python wheels and attach to GitHub Release (reusable).
+  # No longer pushes to PyPI — the per-project size cap made that
+  # impractical. GH Release is the canonical wheel host.
   # ───────────────────────────────────────────────
   publish-python:
-    name: Python SDK
+    name: Python SDK (native wheels → GH Release)
     needs: [ci, ci-windows]
     uses: ./.github/workflows/publish-python.yml
+    secrets: inherit
+
+  # ───────────────────────────────────────────────
+  # Publish the pure-Python bootstrap to PyPI so `pip install a3s-code`
+  # still works. Needs the native wheels to be on GH Release first.
+  # ───────────────────────────────────────────────
+  publish-python-bootstrap:
+    name: Python SDK (bootstrap → PyPI)
+    needs: [publish-python]
+    uses: ./.github/workflows/publish-python-bootstrap.yml
     secrets: inherit
 
   # ───────────────────────────────────────────────
@@ -132,7 +144,7 @@ jobs:
   # ───────────────────────────────────────────────
   github-release:
     name: GitHub Release
-    needs: [publish-crate, publish-node, publish-python]
+    needs: [publish-crate, publish-node, publish-python, publish-python-bootstrap]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

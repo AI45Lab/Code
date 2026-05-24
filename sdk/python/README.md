@@ -4,26 +4,29 @@ Native Python bindings for the A3S Code AI coding agent, built with PyO3.
 
 ## Installation
 
-From v3.2.0 onwards the native wheels are hosted on GitHub Releases
-(PyPI's per-project storage quota grew too tight for a Rust SDK that
-ships a binary per Python × platform). Pick the wheel that matches
-your interpreter and platform:
+```bash
+pip install a3s-code
+```
+
+From v3.2.1 onwards the PyPI `a3s-code` package is a small pure-Python
+bootstrap. On first `import a3s_code` it downloads the matching native
+wheel from [GitHub Releases](https://github.com/AI45Lab/Code/releases),
+verifies the wheel's sha256 against the release manifest, and caches
+the compiled extension under `~/.cache/a3s-code/<version>/`. Subsequent
+imports use the cache.
+
+Override the cache location with `A3S_CODE_CACHE_DIR`, the source URL
+with `A3S_CODE_RELEASES_BASE_URL`, or skip the sha256 verification with
+`A3S_CODE_SKIP_HASH_CHECK=1` (not recommended outside CI). See the
+bootstrap README at `sdk/python-bootstrap/` for the full list.
+
+Air-gapped or hermetic install? Grab the wheel matching your
+interpreter directly:
 
 ```bash
-# Example: CPython 3.12 on linux x86_64
 pip install \
-  https://github.com/AI45Lab/Code/releases/download/v3.2.0/a3s_code-3.2.0-cp312-cp312-manylinux_2_28_x86_64.whl
+  https://github.com/AI45Lab/Code/releases/download/v3.2.1/a3s_code-3.2.1-cp312-cp312-manylinux_2_28_x86_64.whl
 ```
-
-Or list all wheels for a version:
-
-```bash
-gh release view v3.2.0 --json assets -q '.assets[].browser_download_url' \
-  | grep '\.whl$'
-```
-
-Earlier versions (≤ 3.1.0) remain on PyPI and install with the usual
-`pip install a3s-code==3.1.0`.
 
 ## Quick Start
 

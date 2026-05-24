@@ -81,21 +81,22 @@ Full migration notes are in [CHANGELOG.md](./CHANGELOG.md).
 ## Install
 
 ```bash
+# Python
+pip install a3s-code
+
 # Node.js
 npm install @a3s-lab/code
-
-# Python (from v3.2.0; pick the wheel for your interpreter/platform)
-pip install \
-  https://github.com/AI45Lab/Code/releases/download/v3.2.0/a3s_code-3.2.0-cp312-cp312-manylinux_2_28_x86_64.whl
 ```
 
 Rust users can depend on `a3s-code-core`.
 
-Python wheels are hosted on [GitHub Releases](https://github.com/AI45Lab/Code/releases)
-from v3.2.0 onwards — the project grew past PyPI's per-project storage
-quota for binary distributions. Each release ships a
-`python-native-manifest.json` with sha256 hashes for every wheel.
-Versions up to 3.1.0 remain installable via `pip install a3s-code==3.1.0`.
+From v3.2.1 onwards the PyPI `a3s-code` package is a small pure-Python
+bootstrap. On first `import a3s_code` it downloads the matching native
+wheel from [GitHub Releases](https://github.com/AI45Lab/Code/releases),
+verifies the wheel's sha256 against the release manifest, and caches the
+compiled extension under `~/.cache/a3s-code/<version>/`. Subsequent
+imports use the cache. The split exists because the full native-wheel
+matrix grew past PyPI's per-project storage cap.
 
 ---
 

@@ -101,6 +101,17 @@ echo "  Updating sdk/python/pyproject.toml..."
 sed -i.bak "s/^version = \".*\"/version = \"${VERSION}\"/" sdk/python/pyproject.toml
 rm -f sdk/python/pyproject.toml.bak
 
+# Update Python bootstrap shim (pyproject.toml + runtime __version__).
+# Must stay in lockstep with core so the bootstrap fetches the matching
+# native wheel from GH Releases on first import.
+echo "  Updating sdk/python-bootstrap/pyproject.toml..."
+sed -i.bak "s/^version = \".*\"/version = \"${VERSION}\"/" sdk/python-bootstrap/pyproject.toml
+rm -f sdk/python-bootstrap/pyproject.toml.bak
+
+echo "  Updating sdk/python-bootstrap/src/a3s_code/_bootstrap.py..."
+sed -i.bak "s/^__version__ = \".*\"/__version__ = \"${VERSION}\"/" sdk/python-bootstrap/src/a3s_code/_bootstrap.py
+rm -f sdk/python-bootstrap/src/a3s_code/_bootstrap.py.bak
+
 echo "  Updating Node package lockfiles..."
 update_node_lockfile sdk/node/package-lock.json
 update_node_lockfile sdk/node/examples/package-lock.json

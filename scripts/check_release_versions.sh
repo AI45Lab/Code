@@ -97,6 +97,14 @@ def check_node_lockfile(path):
                 check_equal(f"{path} package {key or '<root>'} optionalDependency {name}", value)
 
 
+def check_bootstrap_runtime_version(path):
+    match = re.search(r'^__version__\s*=\s*"([^"]+)"', read(path), re.MULTILINE)
+    if not match:
+        fail(f"{path}: missing __version__ literal")
+        return
+    check_equal(f"{path} __version__", match.group(1))
+
+
 if not expected:
     expected = first_manifest_version("core/Cargo.toml") or ""
 
@@ -110,6 +118,8 @@ check_core_dependency("sdk/node/Cargo.toml")
 check_core_dependency("sdk/python/Cargo.toml")
 check_package_json("sdk/node/package.json")
 check_pyproject("sdk/python/pyproject.toml")
+check_pyproject("sdk/python-bootstrap/pyproject.toml")
+check_bootstrap_runtime_version("sdk/python-bootstrap/src/a3s_code/_bootstrap.py")
 check_cargo_lock("Cargo.lock")
 check_node_lockfile("sdk/node/package-lock.json")
 check_node_lockfile("sdk/node/examples/package-lock.json")

@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "a3s-code"
+# Keep in sync with crates/code core release. The bootstrap loader fetches
+# the matching native wheel from `https://github.com/AI45Lab/Code/releases/tag/v<version>`
+# at import time.
+version = "3.2.1"
+description = "A3S Code Python SDK — pure-Python bootstrap that fetches the native wheel from GitHub Releases"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "A3S Lab"},
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/AI45Lab/Code"
+Repository = "https://github.com/AI45Lab/Code"
+Issues = "https://github.com/AI45Lab/Code/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+a3s_code = ["py.typed"]

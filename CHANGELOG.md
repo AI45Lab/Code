@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.1] - 2026-05-24
+
+### Added
+
+- Python SDK: small pure-Python **bootstrap** shim published to PyPI as
+  `a3s-code`. On first `import a3s_code` it downloads the matching
+  native wheel for the current interpreter/platform from this repo's
+  GitHub Releases, verifies the wheel's sha256 against the release
+  manifest, extracts the compiled `_native` extension into
+  `~/.cache/a3s-code/<version>/`, and registers it as
+  `sys.modules["a3s_code._native"]`. Subsequent imports use the cache.
+  Source under `sdk/python-bootstrap/`.
+  - Environment knobs: `A3S_CODE_CACHE_DIR`, `A3S_CODE_RELEASES_BASE_URL`,
+    `A3S_CODE_SKIP_HASH_CHECK`.
+  - 15 unit tests + 1 live download test gated on
+    `A3S_CODE_BOOTSTRAP_LIVE=1`.
+  - New workflow `publish-python-bootstrap.yml`, wired after
+    `publish-python` in `release.yml`.
+- `scripts/check_release_versions.sh` now also validates the bootstrap
+  package version and the runtime `__version__` literal.
+- `release.sh` now bumps the bootstrap version in lockstep with the
+  core release.
+
+### Fixed
+
+- `pip install a3s-code` works again from v3.2.1, restored after v3.2.0
+  could only push a single wheel to PyPI under the quota cap.
+
 ## [3.2.0] - 2026-05-24
 
 ### Added
