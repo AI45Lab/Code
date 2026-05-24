@@ -1,7 +1,9 @@
 name: Publish Python SDK
 
-# This workflow builds native Python wheels, uploads them to GitHub Releases,
-# and publishes the wheels to PyPI.
+# This workflow builds native Python wheels and uploads them to GitHub
+# Releases. Wheels are NOT pushed to PyPI — they grew the project past
+# PyPI's default 10 GB per-project quota, so GitHub Releases is now the
+# canonical wheel host. See README.md for the install command.
 
 on:
   workflow_call:
@@ -108,10 +110,7 @@ jobs:
       - name: List wheels
         run: ls -la dist/
 
-      # Upload native wheels to GitHub Releases (NOT to PyPI).
-      # Guarded by a tag check so workflow_dispatch from a branch can still
-      # exercise the PyPI publish path for debugging without the GitHub
-      # Release steps tripping on a missing release name.
+      # Upload native wheels to GitHub Releases — the canonical wheel host.
       - name: Ensure release exists and upload native assets
         if: startsWith(github.ref, 'refs/tags/')
         env:
@@ -126,7 +125,8 @@ jobs:
           fi
           gh release upload "$GITHUB_REF_NAME" dist/*.whl --clobber
 
-      # Generate manifest with wheel metadata for bootstrap downloader
+      # Generate manifest of wheel metadata (filename + sha256) so a
+      # future bootstrap installer can pick the right wheel by platform.
       - name: Generate native wheel manifest
         if: startsWith(github.ref, 'refs/tags/')
         run: |
@@ -135,19 +135,9 @@ jobs:
             dist/python-native-manifest.json \
             --version "${GITHUB_REF_NAME#v}"
 
-      # Upload manifest to GitHub Releases
       - name: Upload manifest to GitHub Releases
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release upload "$GITHUB_REF_NAME" dist/python-native-manifest.json --clobber
-
-      # Publish native wheels to PyPI
-      - name: Publish wheels to PyPI
-        env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_NATIVE_TOKEN }}
-        run: |
-          python -m pip install --upgrade pip twine
-          python -m twine upload --verbose --skip-existing dist/*.whl

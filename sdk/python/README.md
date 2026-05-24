@@ -4,9 +4,26 @@ Native Python bindings for the A3S Code AI coding agent, built with PyO3.
 
 ## Installation
 
+From v3.2.0 onwards the native wheels are hosted on GitHub Releases
+(PyPI's per-project storage quota grew too tight for a Rust SDK that
+ships a binary per Python × platform). Pick the wheel that matches
+your interpreter and platform:
+
 ```bash
-pip install a3s-code
+# Example: CPython 3.12 on linux x86_64
+pip install \
+  https://github.com/AI45Lab/Code/releases/download/v3.2.0/a3s_code-3.2.0-cp312-cp312-manylinux_2_28_x86_64.whl
 ```
+
+Or list all wheels for a version:
+
+```bash
+gh release view v3.2.0 --json assets -q '.assets[].browser_download_url' \
+  | grep '\.whl$'
+```
+
+Earlier versions (≤ 3.1.0) remain on PyPI and install with the usual
+`pip install a3s-code==3.1.0`.
 
 ## Quick Start
 

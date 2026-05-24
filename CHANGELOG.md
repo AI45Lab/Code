@@ -67,6 +67,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that query the tracker immediately after scheduling do not race the
   spawned task.
 
+### Packaging
+
+- The Python SDK no longer ships native wheels to PyPI. The project
+  grew past PyPI's default 10 GB per-project quota, and binary wheels
+  for the full Rust × CPython × platform matrix consume that budget
+  fast. From v3.2.0 onwards the canonical wheel host is GitHub
+  Releases — see README for the install command. Versions up to 3.1.0
+  remain installable from PyPI for backward compatibility.
+
 ### Breaking
 
 - `TaskExecutor::execute`, `execute_parallel`, and `execute_background` now
