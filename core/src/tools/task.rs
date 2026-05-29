@@ -15,6 +15,7 @@
 //! ```
 
 use crate::agent::{AgentConfig, AgentEvent, AgentLoop};
+use crate::llm::structured::{generate_blocking, StructuredMode, StructuredRequest};
 use crate::llm::LlmClient;
 use crate::mcp::manager::McpManager;
 use crate::orchestration::{AgentExecutor, AgentStepSpec, StepOutcome};
@@ -517,6 +518,7 @@ impl TaskExecutor {
                 prompt: params.prompt,
                 max_steps: params.max_steps,
                 parent_session_id: parent.clone(),
+                output_schema: None,
             })
             .collect();
 
@@ -537,6 +539,7 @@ impl From<TaskResult> for StepOutcome {
             agent: r.agent,
             output: r.output,
             success: r.success,
+            structured: None,
         }
     }
 }
@@ -565,6 +568,7 @@ impl AgentExecutor for TaskExecutor {
     ) -> StepOutcome {
         let agent = spec.agent.clone();
         let task_id = spec.task_id.clone();
+        let output_schema = spec.output_schema.clone();
         let params = TaskParams {
             agent: spec.agent,
             description: spec.description,
@@ -572,7 +576,7 @@ impl AgentExecutor for TaskExecutor {
             background: false,
             max_steps: spec.max_steps,
         };
-        match self
+        let mut outcome: StepOutcome = match self
             .execute_with_task_id(
                 task_id.clone(),
                 params,
@@ -583,12 +587,62 @@ impl AgentExecutor for TaskExecutor {
             .await
         {
             Ok(result) => result.into(),
-            Err(e) => StepOutcome::failed(task_id, agent, format!("Task failed: {e}")),
+            Err(e) => return StepOutcome::failed(task_id, agent, format!("Task failed: {e}")),
+        };
+
+        // When the step requested structured output, coerce the (succeeded)
+        // free-text result to the schema. A coercion failure demotes the step
+        // to unsuccessful so callers never treat unvalidated text as the
+        // promised object.
+        if outcome.success {
+            if let Some(schema) = output_schema {
+                match self.coerce_to_schema(&outcome.output, schema).await {
+                    Ok(object) => outcome.structured = Some(object),
+                    Err(e) => {
+                        outcome.success = false;
+                        outcome.output =
+                            format!("{}\n\n[structured output failed: {e}]", outcome.output);
+                    }
+                }
+            }
         }
+        outcome
     }
 
     fn concurrency_hint(&self) -> usize {
         self.max_parallel_tasks
+    }
+}
+
+impl TaskExecutor {
+    /// Coerce a step's free-text output into a JSON object validated against
+    /// `schema`, reusing the structured-output machinery (Tool mode — the most
+    /// portable across providers, with built-in repair). This is one extra LLM
+    /// call beyond the step's own run.
+    async fn coerce_to_schema(
+        &self,
+        output: &str,
+        schema: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let req = StructuredRequest {
+            prompt: format!(
+                "Convert the following task result into a single JSON object that conforms to \
+                 the required schema. Use only information present in the result.\n\n\
+                 --- TASK RESULT ---\n{output}"
+            ),
+            system: Some(
+                "You output exactly one JSON object matching the provided schema.".to_string(),
+            ),
+            schema,
+            schema_name: "step_output".to_string(),
+            schema_description: None,
+            // Tool mode works on every provider that supports tool use and
+            // does not depend on response_format wiring.
+            mode: StructuredMode::Tool,
+            max_repair_attempts: 2,
+        };
+        let result = generate_blocking(&*self.llm_client, &req).await?;
+        Ok(result.object)
     }
 }
 
@@ -1568,6 +1622,94 @@ mod tests {
                 })
             })
             .unwrap_or_default()
+    }
+
+    /// Client for the schema-coercion tests. The agent's own turn returns
+    /// plain text (which ends the loop); the structured-output coercion call
+    /// — recognizable by the injected `step_output` tool — returns a tool call
+    /// carrying the object.
+    struct SchemaCoercionClient;
+
+    #[async_trait::async_trait]
+    impl LlmClient for SchemaCoercionClient {
+        async fn complete(
+            &self,
+            messages: &[Message],
+            system: Option<&str>,
+            tools: &[ToolDefinition],
+        ) -> Result<LlmResponse> {
+            if system == Some(crate::prompts::PRE_ANALYSIS_SYSTEM) {
+                return Ok(pre_analysis_response(messages));
+            }
+            // The structured-output coercion injects a synthetic tool named
+            // `emit_<schema_name>` (here `emit_step_output`).
+            if tools.iter().any(|t| t.name == "emit_step_output") {
+                return Ok(MockLlmClient::tool_call_response(
+                    "coerce-1",
+                    "emit_step_output",
+                    serde_json::json!({ "verdict": "ok" }),
+                ));
+            }
+            Ok(text_response("The verdict is ok."))
+        }
+
+        async fn complete_streaming(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[ToolDefinition],
+            _cancel_token: tokio_util::sync::CancellationToken,
+        ) -> Result<mpsc::Receiver<StreamEvent>> {
+            anyhow::bail!("streaming is not used by schema coercion tests")
+        }
+    }
+
+    fn verdict_schema() -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": { "verdict": { "type": "string" } },
+            "required": ["verdict"]
+        })
+    }
+
+    #[tokio::test]
+    async fn execute_step_with_schema_coerces_structured_output() {
+        let workspace = tempfile::tempdir().unwrap();
+        let executor = TaskExecutor::new(
+            Arc::new(AgentRegistry::new()),
+            Arc::new(SchemaCoercionClient),
+            workspace.path().to_string_lossy().to_string(),
+        );
+        let spec = AgentStepSpec::new("step-1", "general", "assess", "Assess the thing.")
+            .with_output_schema(verdict_schema());
+
+        let outcome = executor.execute_step(spec, None).await;
+
+        assert!(outcome.success, "step should succeed: {}", outcome.output);
+        assert_eq!(
+            outcome.structured,
+            Some(serde_json::json!({ "verdict": "ok" })),
+            "a schema'd step returns the validated object in `structured`"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_step_without_schema_has_no_structured_output() {
+        let workspace = tempfile::tempdir().unwrap();
+        let executor = TaskExecutor::new(
+            Arc::new(AgentRegistry::new()),
+            Arc::new(SchemaCoercionClient),
+            workspace.path().to_string_lossy().to_string(),
+        );
+        let spec = AgentStepSpec::new("step-2", "general", "assess", "Assess the thing.");
+
+        let outcome = executor.execute_step(spec, None).await;
+
+        assert!(outcome.success, "step should succeed: {}", outcome.output);
+        assert_eq!(
+            outcome.structured, None,
+            "no schema requested → no structured output, no coercion call"
+        );
     }
 
     struct StaticLlmClient {

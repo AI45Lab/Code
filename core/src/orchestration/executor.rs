@@ -13,7 +13,9 @@ use tokio::sync::broadcast;
 /// Serializable on purpose: a host (书安OS) may ship it to another node, and
 /// a future workflow checkpoint persists it. The orchestration layer assigns
 /// `task_id`; everything else mirrors a delegated task.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+// `serde_json::Value` (in `output_schema`) is not `Eq`, so this derives
+// `PartialEq` only.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentStepSpec {
     /// Stable id for this step. Flows into lifecycle events (and, later,
     /// workflow checkpoints) so a step can be correlated and resumed.
@@ -30,6 +32,12 @@ pub struct AgentStepSpec {
     /// Parent session id, for lifecycle-event correlation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<String>,
+    /// When set, the step must return a value conforming to this JSON Schema.
+    /// The executor fulfills it (the local default coerces the step's output
+    /// with the structured-output machinery); the validated object lands in
+    /// [`StepOutcome::structured`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<serde_json::Value>,
 }
 
 impl AgentStepSpec {
@@ -47,6 +55,7 @@ impl AgentStepSpec {
             prompt: prompt.into(),
             max_steps: None,
             parent_session_id: None,
+            output_schema: None,
         }
     }
 
@@ -59,16 +68,29 @@ impl AgentStepSpec {
         self.parent_session_id = Some(parent_session_id.into());
         self
     }
+
+    /// Require this step to return a value conforming to `schema`.
+    pub fn with_output_schema(mut self, schema: serde_json::Value) -> Self {
+        self.output_schema = Some(schema);
+        self
+    }
 }
 
 /// The result of running one [`AgentStepSpec`] to completion.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+///
+/// `structured` is `Some` only when the spec carried an `output_schema` and
+/// the executor produced a value validated against it. (`serde_json::Value`
+/// is not `Eq`, so this derives `PartialEq` only.)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StepOutcome {
     pub task_id: String,
     pub session_id: String,
     pub agent: String,
     pub output: String,
     pub success: bool,
+    /// Schema-validated structured output, when the step requested one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub structured: Option<serde_json::Value>,
 }
 
 impl StepOutcome {
@@ -88,6 +110,7 @@ impl StepOutcome {
             agent: agent.into(),
             output: message.into(),
             success: false,
+            structured: None,
         }
     }
 }
@@ -212,6 +235,7 @@ mod tests {
                 agent: spec.agent.clone(),
                 output: format!("ran: {}", spec.prompt),
                 success: spec.agent != "fail",
+                structured: None,
             }
         }
         fn concurrency_hint(&self) -> usize {
@@ -288,5 +312,46 @@ mod tests {
             }
         }
         assert_eq!(Bare.concurrency_hint(), DEFAULT_MAX_PARALLEL_TASKS);
+    }
+
+    #[test]
+    fn spec_and_outcome_round_trip_including_new_optional_fields() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": { "v": { "type": "string" } },
+            "required": ["v"]
+        });
+        let spec = AgentStepSpec::new("t1", "explore", "d", "p")
+            .with_max_steps(3)
+            .with_parent_session_id("parent")
+            .with_output_schema(schema.clone());
+        let back: AgentStepSpec =
+            serde_json::from_str(&serde_json::to_string(&spec).unwrap()).unwrap();
+        assert_eq!(back, spec);
+        assert_eq!(back.output_schema, Some(schema));
+
+        let outcome = StepOutcome {
+            task_id: "t1".into(),
+            session_id: "task-run-t1".into(),
+            agent: "explore".into(),
+            output: "ok".into(),
+            success: true,
+            structured: Some(serde_json::json!({ "v": "x" })),
+        };
+        let back: StepOutcome =
+            serde_json::from_str(&serde_json::to_string(&outcome).unwrap()).unwrap();
+        assert_eq!(back, outcome);
+
+        // Backward-compat: a pre-Phase-2 payload lacking the new optional
+        // fields still loads (they default to None).
+        let old_spec: AgentStepSpec =
+            serde_json::from_str(r#"{"task_id":"t","agent":"a","description":"d","prompt":"p"}"#)
+                .unwrap();
+        assert_eq!(old_spec.output_schema, None);
+        let old_outcome: StepOutcome = serde_json::from_str(
+            r#"{"task_id":"t","session_id":"s","agent":"a","output":"o","success":true}"#,
+        )
+        .unwrap();
+        assert_eq!(old_outcome.structured, None);
     }
 }
