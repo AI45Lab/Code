@@ -94,6 +94,7 @@ pub mod llm;
 pub mod loop_checkpoint;
 pub mod mcp;
 pub mod memory;
+pub mod orchestration;
 pub(crate) mod ordered_parallel;
 pub mod permissions;
 pub mod planning;
@@ -134,6 +135,7 @@ pub use llm::{
     ContentBlock, HttpMetricsCallback, HttpMetricsRecord, ImageSource, LlmClient, LlmResponse,
     Message, OpenAiClient, TokenUsage,
 };
+pub use orchestration::{execute_steps_parallel, AgentExecutor, AgentStepSpec, StepOutcome};
 pub use prompts::{AgentStyle, DetectionConfidence, PlanningMode, SystemPromptSlots};
 pub use run::{
     ActiveToolSnapshot, InMemoryRunStore, RunEventRecord, RunHandle, RunRecord, RunSnapshot,

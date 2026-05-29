@@ -17,6 +17,7 @@
 use crate::agent::{AgentConfig, AgentEvent, AgentLoop};
 use crate::llm::LlmClient;
 use crate::mcp::manager::McpManager;
+use crate::orchestration::{AgentExecutor, AgentStepSpec, StepOutcome};
 use crate::subagent::AgentRegistry;
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
 use anyhow::{Context, Result};
@@ -496,64 +497,98 @@ impl TaskExecutor {
     /// Execute multiple tasks in parallel.
     ///
     /// Spawns all tasks concurrently and waits for all to complete.
-    /// Returns results in the same order as the input tasks.
+    /// Returns results in the same order as the input tasks. Routed through
+    /// the [`AgentExecutor`](crate::orchestration::AgentExecutor) seam so the
+    /// same fan-out works whether steps run locally (default) or are placed
+    /// on remote nodes by a host.
     pub async fn execute_parallel(
         self: &Arc<Self>,
         tasks: Vec<TaskParams>,
         event_tx: Option<broadcast::Sender<AgentEvent>>,
         parent_session_id: Option<&str>,
     ) -> Vec<TaskResult> {
-        let fallback_agents = tasks
-            .iter()
-            .map(|params| params.agent.clone())
-            .collect::<Vec<_>>();
-        let executor = Arc::clone(self);
-        let parent_session_id = parent_session_id.map(|s| s.to_string());
-        let results = crate::ordered_parallel::run_ordered_parallel_with_limit(
-            tasks,
-            self.max_parallel_tasks,
-            move |_idx, params| {
-                let executor = Arc::clone(&executor);
-                let tx = event_tx.clone();
-                let parent = parent_session_id.clone();
-                async move {
-                    match executor
-                        .execute(params.clone(), tx, parent.as_deref())
-                        .await
-                    {
-                        Ok(result) => result,
-                        Err(e) => TaskResult {
-                            output: format!("Task failed: {}", e),
-                            session_id: String::new(),
-                            agent: params.agent,
-                            success: false,
-                            task_id: format!("task-{}", uuid::Uuid::new_v4()),
-                        },
-                    }
-                }
-            },
-        )
-        .await;
-
-        results
+        let parent = parent_session_id.map(|s| s.to_string());
+        let specs = tasks
             .into_iter()
-            .map(|result| match result.output {
-                Ok(task_result) => task_result,
-                Err(error) => {
-                    tracing::error!("Parallel task failed: {}", error);
-                    TaskResult {
-                        output: format!("Task failed: {}", error),
-                        session_id: String::new(),
-                        agent: fallback_agents
-                            .get(result.index)
-                            .cloned()
-                            .unwrap_or_else(|| "unknown".to_string()),
-                        success: false,
-                        task_id: format!("task-{}", uuid::Uuid::new_v4()),
-                    }
-                }
+            .map(|params| AgentStepSpec {
+                task_id: format!("task-{}", uuid::Uuid::new_v4()),
+                agent: params.agent,
+                description: params.description,
+                prompt: params.prompt,
+                max_steps: params.max_steps,
+                parent_session_id: parent.clone(),
             })
+            .collect();
+
+        let executor: Arc<dyn AgentExecutor> = Arc::<Self>::clone(self);
+        crate::orchestration::execute_steps_parallel(executor, specs, event_tx)
+            .await
+            .into_iter()
+            .map(TaskResult::from)
             .collect()
+    }
+}
+
+impl From<TaskResult> for StepOutcome {
+    fn from(r: TaskResult) -> Self {
+        StepOutcome {
+            task_id: r.task_id,
+            session_id: r.session_id,
+            agent: r.agent,
+            output: r.output,
+            success: r.success,
+        }
+    }
+}
+
+impl From<StepOutcome> for TaskResult {
+    fn from(o: StepOutcome) -> Self {
+        TaskResult {
+            output: o.output,
+            session_id: o.session_id,
+            agent: o.agent,
+            success: o.success,
+            task_id: o.task_id,
+        }
+    }
+}
+
+/// The local, in-process executor: every step runs as a child `AgentLoop` on
+/// this node's tokio runtime. This is the default; a host (书安OS) substitutes
+/// its own [`AgentExecutor`] to place steps across a cluster.
+#[async_trait]
+impl AgentExecutor for TaskExecutor {
+    async fn execute_step(
+        &self,
+        spec: AgentStepSpec,
+        event_tx: Option<broadcast::Sender<AgentEvent>>,
+    ) -> StepOutcome {
+        let agent = spec.agent.clone();
+        let task_id = spec.task_id.clone();
+        let params = TaskParams {
+            agent: spec.agent,
+            description: spec.description,
+            prompt: spec.prompt,
+            background: false,
+            max_steps: spec.max_steps,
+        };
+        match self
+            .execute_with_task_id(
+                task_id.clone(),
+                params,
+                event_tx,
+                spec.parent_session_id.as_deref(),
+                true,
+            )
+            .await
+        {
+            Ok(result) => result.into(),
+            Err(e) => StepOutcome::failed(task_id, agent, format!("Task failed: {e}")),
+        }
+    }
+
+    fn concurrency_hint(&self) -> usize {
+        self.max_parallel_tasks
     }
 }
 
