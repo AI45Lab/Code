@@ -920,6 +920,35 @@ impl AgentSession {
         SessionView::from_session(self).id()
     }
 
+    /// An [`AgentExecutor`](crate::orchestration::AgentExecutor) backed by this
+    /// session — runs each orchestrated step as a child agent on this node,
+    /// inheriting the session's agent registry, LLM client, workspace, MCP
+    /// tools, and subagent tracker.
+    ///
+    /// This is what the orchestration combinators
+    /// ([`execute_steps_parallel`](crate::orchestration::execute_steps_parallel),
+    /// [`execute_pipeline`](crate::orchestration::execute_pipeline),
+    /// [`execute_steps_parallel_resumable`](crate::orchestration::execute_steps_parallel_resumable))
+    /// run against; a host can instead supply its own executor to place steps
+    /// across a cluster.
+    pub fn agent_executor(&self) -> Arc<dyn crate::orchestration::AgentExecutor> {
+        let executor = crate::tools::TaskExecutor::with_mcp(
+            Arc::clone(&self.agent_registry),
+            Arc::clone(&self.llm_client),
+            self.workspace.display().to_string(),
+            Arc::clone(&self.mcp_manager),
+        )
+        .with_subagent_tracker(Arc::clone(&self.subagent_tasks))
+        .with_max_parallel_tasks(self.config.max_parallel_tasks);
+        Arc::new(executor)
+    }
+
+    /// The session's persistence store, if one is configured — needed by the
+    /// resumable orchestration combinator to journal workflow progress.
+    pub fn session_store(&self) -> Option<Arc<dyn crate::store::SessionStore>> {
+        self.session_store.clone()
+    }
+
     /// Return the definitions of all tools currently registered in this session.
     ///
     /// The list reflects the live state of the tool executor — tools added via
