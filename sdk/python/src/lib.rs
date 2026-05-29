@@ -13,6 +13,23 @@
 //! result = session.send("What files handle auth?")
 //! print(result.text)
 //! ```
+//!
+//! ## Panic safety at the FFI boundary
+//!
+//! PyO3 0.23 wraps `#[pyfunction]` / `#[pymethods]` / `#[pymodule]`-init bodies
+//! in `catch_unwind`, so a panic there surfaces as a Python `PanicException`
+//! (a `BaseException` subclass) rather than UB. It does **not** cover panics
+//! inside `std::thread` / `tokio::spawn` task bodies, or `Python::with_gil`
+//! closures invoked from a worker thread *outside* a pyfunction frame — those
+//! are silently lost, and a panicking `Drop` during an unwind aborts the
+//! process.
+//!
+//! Convention this crate follows so the boundary stays safe: the Rust→Python
+//! bridges that run on tokio worker threads (`PythonCallbackHandler`,
+//! `PyBudgetGuard`, `PySlashCommand`) never `.unwrap()` / `panic!`; they use
+//! `.ok()` / `unwrap_or_else` and fail closed. (Audited 2026-05: the only
+//! production panic site is the lazy Tokio-runtime build in `get_runtime()`,
+//! reached only from caught pyfunction frames.)
 
 use a3s_code_core::commands::{
     CommandContext as RustCommandContext, CommandOutput as RustCommandOutput,

@@ -13,6 +13,27 @@
 //! const result = await session.send('What files handle auth?');
 //! console.log(result.text);
 //! ```
+//!
+//! ## Panic safety at the FFI boundary
+//!
+//! napi 2.x does **not** wrap exported bodies in `catch_unwind` by default. A
+//! Rust panic that reaches the `extern "C"` boundary aborts the whole Node
+//! process (Rust ≥ 1.81) — it does *not* become a catchable JS error. Only two
+//! contexts are panic-safe: a `#[napi]` **async** fn / `impl Future` (panic →
+//! rejected Promise) and a sync fn explicitly tagged `#[napi(catch_unwind)]`.
+//! Everything else aborts (or silently loses the panic): default **sync**
+//! `#[napi]` fns, `ThreadsafeFunction` callbacks (a panic there — or a
+//! return-value conversion `Err` — aborts via `napi_fatal_error` under *both*
+//! `ErrorStrategy` variants), `tokio::spawn`'d task bodies (panic swallowed,
+//! never surfaced), `Drop`/finalizers, and module init.
+//!
+//! Convention this crate follows so the boundary stays safe: never
+//! `.unwrap()` / `.expect()` / `panic!` in those contexts. Propagate with `?`
+//! into a `napi::Error`, or fail closed with `unwrap_or_else` inside
+//! threadsafe callbacks. (Audited 2026-05: the only production panic site is
+//! the lazy Tokio-runtime build in `fallback_runtime()`, reached from within
+//! `#[napi]` bodies; the spawned-task and threadsafe-callback paths are
+//! panic-free by construction.)
 
 #[macro_use]
 extern crate napi_derive;
