@@ -106,11 +106,23 @@ pub async fn execute_steps_parallel_resumable(
     store: Arc<dyn SessionStore>,
     event_tx: Option<broadcast::Sender<AgentEvent>>,
 ) -> Vec<StepOutcome> {
-    // Prior progress (the store's load rejects a future-version checkpoint).
+    // Prior progress. An unreadable checkpoint — e.g. one written by a newer,
+    // incompatible schema version, which the store rejects via
+    // `ensure_loadable` — is treated as *no* prior progress: the workflow
+    // re-runs from scratch rather than resuming from state it can't interpret.
+    // That's a fail-safe (do the work), but surface it rather than swallow it.
     let done: HashMap<String, StepOutcome> = match store.load_workflow_checkpoint(workflow_id).await
     {
         Ok(Some(cp)) => cp.completed(),
-        _ => HashMap::new(),
+        Ok(None) => HashMap::new(),
+        Err(e) => {
+            tracing::warn!(
+                workflow_id = %workflow_id,
+                error = %e,
+                "workflow checkpoint unreadable; re-running the workflow from scratch"
+            );
+            HashMap::new()
+        }
     };
 
     let pending: Vec<AgentStepSpec> = specs
@@ -485,5 +497,171 @@ mod tests {
             !completed.contains_key("bad"),
             "failed step is NOT recorded → it retries on resume"
         );
+    }
+
+    struct ZeroHintExecutor;
+    #[async_trait]
+    impl AgentExecutor for ZeroHintExecutor {
+        async fn execute_step(
+            &self,
+            spec: AgentStepSpec,
+            _event_tx: Option<broadcast::Sender<AgentEvent>>,
+        ) -> StepOutcome {
+            StepOutcome {
+                task_id: spec.task_id.clone(),
+                session_id: format!("task-run-{}", spec.task_id),
+                agent: spec.agent.clone(),
+                output: "ok".to_string(),
+                success: true,
+                structured: None,
+            }
+        }
+        fn concurrency_hint(&self) -> usize {
+            0
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_inputs_return_empty() {
+        let exec: Arc<dyn AgentExecutor> = Arc::new(EchoExecutor::new());
+        assert!(
+            crate::orchestration::execute_steps_parallel(Arc::clone(&exec), vec![], None)
+                .await
+                .is_empty()
+        );
+        let stages: Vec<PipelineStage<&str>> =
+            vec![stage(|_p: Option<&StepOutcome>, item: &&str| {
+                Some(AgentStepSpec::new("s", "explore", "d", *item))
+            })];
+        assert!(execute_pipeline(exec, Vec::<&str>::new(), stages, None)
+            .await
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn zero_concurrency_hint_still_makes_progress() {
+        // The .max(1) clamp in run_ordered_parallel_with_limit keeps a 0-hint
+        // executor serialized-but-live instead of deadlocking on 0 permits.
+        let exec: Arc<dyn AgentExecutor> = Arc::new(ZeroHintExecutor);
+        let specs = vec![
+            AgentStepSpec::new("a", "explore", "d", "p"),
+            AgentStepSpec::new("b", "explore", "d", "p"),
+            AgentStepSpec::new("c", "explore", "d", "p"),
+        ];
+        let out = crate::orchestration::execute_steps_parallel(exec, specs, None).await;
+        assert_eq!(
+            out.iter().map(|o| o.task_id.as_str()).collect::<Vec<_>>(),
+            vec!["a", "b", "c"]
+        );
+        assert!(out.iter().all(|o| o.success));
+    }
+
+    #[tokio::test]
+    async fn pipeline_first_stage_none_yields_none_outcome() {
+        let exec: Arc<dyn AgentExecutor> = Arc::new(EchoExecutor::new());
+        let stages: Vec<PipelineStage<&str>> =
+            vec![stage(|_p: Option<&StepOutcome>, item: &&str| {
+                if *item == "skip" {
+                    None
+                } else {
+                    Some(AgentStepSpec::new("s", "explore", "d", *item))
+                }
+            })];
+        let out = execute_pipeline(exec, vec!["skip", "run"], stages, None).await;
+        assert!(
+            out[0].is_none(),
+            "a first-stage None yields a None outcome (chain never started)"
+        );
+        assert!(out[1].as_ref().unwrap().success);
+    }
+
+    fn cached(task_id: &str, agent: &str, output: &str) -> StepOutcome {
+        StepOutcome {
+            task_id: task_id.to_string(),
+            session_id: format!("task-run-{task_id}"),
+            agent: agent.to_string(),
+            output: output.to_string(),
+            success: true,
+            structured: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn resumable_reruns_all_when_checkpoint_load_errors() {
+        use crate::store::MemorySessionStore;
+        let store: Arc<dyn SessionStore> = Arc::new(MemorySessionStore::new());
+
+        // A checkpoint written by a *newer*, incompatible schema version: the
+        // store rejects it on load. The resumable combinator must treat that as
+        // no prior progress and re-run everything (fail-safe), not panic or
+        // silently resume from state it can't read.
+        let mut done = std::collections::HashMap::new();
+        done.insert("a".to_string(), cached("a", "explore", "old"));
+        let mut cp = WorkflowCheckpoint::from_completed("wf-err", &done, 1);
+        cp.schema_version = crate::orchestration::WORKFLOW_CHECKPOINT_SCHEMA_VERSION + 1;
+        store.save_workflow_checkpoint("wf-err", &cp).await.unwrap();
+
+        let ran = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let exec: Arc<dyn AgentExecutor> = Arc::new(RecordingExecutor {
+            ran: Arc::clone(&ran),
+        });
+        let specs = vec![
+            AgentStepSpec::new("a", "explore", "d", "pa"),
+            AgentStepSpec::new("b", "review", "d", "pb"),
+        ];
+        let out =
+            execute_steps_parallel_resumable(exec, specs, "wf-err", Arc::clone(&store), None).await;
+
+        let mut ran_ids = ran.lock().await.clone();
+        ran_ids.sort();
+        assert_eq!(
+            ran_ids,
+            vec!["a".to_string(), "b".to_string()],
+            "an unreadable (future-version) checkpoint is ignored → all steps re-run"
+        );
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|o| o.success));
+    }
+
+    #[tokio::test]
+    async fn resumable_ignores_checkpointed_steps_absent_from_new_specs() {
+        use crate::store::MemorySessionStore;
+        let store: Arc<dyn SessionStore> = Arc::new(MemorySessionStore::new());
+
+        // Prior checkpoint completed {a, b}; the new run drops "a", reorders,
+        // and adds "c". Output follows the NEW specs; "b" is reused; the stale
+        // "a" simply doesn't appear; only "c" actually runs.
+        let mut done = std::collections::HashMap::new();
+        done.insert("a".to_string(), cached("a", "explore", "cached-a"));
+        done.insert("b".to_string(), cached("b", "review", "cached-b"));
+        store
+            .save_workflow_checkpoint(
+                "wf-x",
+                &WorkflowCheckpoint::from_completed("wf-x", &done, 1),
+            )
+            .await
+            .unwrap();
+
+        let ran = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let exec: Arc<dyn AgentExecutor> = Arc::new(RecordingExecutor {
+            ran: Arc::clone(&ran),
+        });
+        let specs = vec![
+            AgentStepSpec::new("b", "review", "d", "pb"),
+            AgentStepSpec::new("c", "plan", "d", "pc"),
+        ];
+        let out =
+            execute_steps_parallel_resumable(exec, specs, "wf-x", Arc::clone(&store), None).await;
+
+        assert_eq!(
+            *ran.lock().await,
+            vec!["c".to_string()],
+            "cached b reused, stale a dropped, only new c runs"
+        );
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].task_id, "b");
+        assert_eq!(out[0].output, "cached-b");
+        assert_eq!(out[1].task_id, "c");
+        assert!(out.iter().all(|o| o.success));
     }
 }

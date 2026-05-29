@@ -30,6 +30,10 @@ use a3s_code_core::llm::{
     ContentBlock, ImageSource, Message, TokenUsage, ToolResultContent, ToolResultContentField,
 };
 use a3s_code_core::loop_checkpoint::{LoopCheckpoint, LOOP_CHECKPOINT_SCHEMA_VERSION};
+use a3s_code_core::orchestration::{
+    AgentStepSpec, StepOutcome, WorkflowCheckpoint, WorkflowStepRecord,
+    WORKFLOW_CHECKPOINT_SCHEMA_VERSION,
+};
 use a3s_code_core::permissions::{PermissionPolicy, PermissionRule};
 use a3s_code_core::planning::Task;
 use a3s_code_core::run::{RunEventRecord, RunRecord, RunSnapshot, RunStatus};
@@ -581,6 +585,57 @@ where
 // 1. Round-trip stability fuzz across the persisted graph.
 // ─────────────────────────────────────────────────────────────────────
 
+// Orchestration persisted types (#43): serializable, and WorkflowCheckpoint
+// is explicitly designed for cross-node migration — so round-trip stability
+// and forward/backward compat matter for exactly these.
+fn gen_agent_step_spec(rng: &mut Rng) -> AgentStepSpec {
+    AgentStepSpec {
+        task_id: rng.string(),
+        agent: rng.string(),
+        description: rng.string(),
+        prompt: rng.string(),
+        max_steps: rng.opt_usize(),
+        parent_session_id: rng.opt_string(),
+        // Exercise BOTH arms — output_schema is skip_serializing_if=None.
+        output_schema: if rng.boolean() {
+            Some(rng.json_value_non_null(2))
+        } else {
+            None
+        },
+    }
+}
+
+fn gen_step_outcome(rng: &mut Rng) -> StepOutcome {
+    StepOutcome {
+        task_id: rng.string(),
+        session_id: rng.string(),
+        agent: rng.string(),
+        output: rng.string(),
+        success: rng.boolean(),
+        structured: if rng.boolean() {
+            Some(rng.json_value_non_null(2))
+        } else {
+            None
+        },
+    }
+}
+
+fn gen_workflow_checkpoint(rng: &mut Rng) -> WorkflowCheckpoint {
+    let n = rng.below(4);
+    WorkflowCheckpoint {
+        // Stay at-or-below the current version (future versions are rejected).
+        schema_version: rng.below(u64::from(WORKFLOW_CHECKPOINT_SCHEMA_VERSION) + 1) as u32,
+        workflow_id: rng.string(),
+        steps: (0..n)
+            .map(|_| WorkflowStepRecord {
+                task_id: rng.string(),
+                outcome: gen_step_outcome(rng),
+            })
+            .collect(),
+        checkpoint_ms: rng.u64_small(),
+    }
+}
+
 #[test]
 fn fuzz_roundtrip_all_persisted_types() {
     const SEEDS: u64 = 600;
@@ -602,6 +657,15 @@ fn fuzz_roundtrip_all_persisted_types() {
         );
         assert_roundtrip_stable(&gen_message(&mut rng), &format!("Message/{seed}"));
         assert_roundtrip_stable(&gen_session_data(&mut rng), &format!("SessionData/{seed}"));
+        assert_roundtrip_stable(
+            &gen_agent_step_spec(&mut rng),
+            &format!("AgentStepSpec/{seed}"),
+        );
+        assert_roundtrip_stable(&gen_step_outcome(&mut rng), &format!("StepOutcome/{seed}"));
+        assert_roundtrip_stable(
+            &gen_workflow_checkpoint(&mut rng),
+            &format!("WorkflowCheckpoint/{seed}"),
+        );
     }
 }
 
@@ -764,6 +828,9 @@ fn forward_compat_unknown_fields_ignored_on_persisted_types() {
     assert_unknown_fields_ignored(&gen_verification_report(&mut rng), "VerificationReport");
     assert_unknown_fields_ignored(&gen_run_record(&mut rng), "RunRecord");
     assert_unknown_fields_ignored(&gen_session_data(&mut rng), "SessionData");
+    assert_unknown_fields_ignored(&gen_agent_step_spec(&mut rng), "AgentStepSpec");
+    assert_unknown_fields_ignored(&gen_step_outcome(&mut rng), "StepOutcome");
+    assert_unknown_fields_ignored(&gen_workflow_checkpoint(&mut rng), "WorkflowCheckpoint");
 }
 
 // ─────────────────────────────────────────────────────────────────────

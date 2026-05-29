@@ -1712,6 +1712,119 @@ mod tests {
         );
     }
 
+    /// The agent's turn returns text; the coercion call (`emit_step_output`)
+    /// always returns an object that VIOLATES the schema, so `generate_blocking`
+    /// exhausts its repairs and bails.
+    struct SchemaFailClient;
+
+    #[async_trait::async_trait]
+    impl LlmClient for SchemaFailClient {
+        async fn complete(
+            &self,
+            messages: &[Message],
+            system: Option<&str>,
+            tools: &[ToolDefinition],
+        ) -> Result<LlmResponse> {
+            if system == Some(crate::prompts::PRE_ANALYSIS_SYSTEM) {
+                return Ok(pre_analysis_response(messages));
+            }
+            if tools.iter().any(|t| t.name == "emit_step_output") {
+                // `{}` is missing the required `verdict` field → schema invalid.
+                return Ok(MockLlmClient::tool_call_response(
+                    "coerce-fail",
+                    "emit_step_output",
+                    serde_json::json!({}),
+                ));
+            }
+            Ok(text_response("some answer"))
+        }
+
+        async fn complete_streaming(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[ToolDefinition],
+            _cancel_token: tokio_util::sync::CancellationToken,
+        ) -> Result<mpsc::Receiver<StreamEvent>> {
+            anyhow::bail!("streaming unused")
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_step_with_schema_demotes_step_on_coercion_failure() {
+        let workspace = tempfile::tempdir().unwrap();
+        let executor = TaskExecutor::new(
+            Arc::new(AgentRegistry::new()),
+            Arc::new(SchemaFailClient),
+            workspace.path().to_string_lossy().to_string(),
+        );
+        let spec = AgentStepSpec::new("step-x", "general", "assess", "Assess the thing.")
+            .with_output_schema(verdict_schema());
+
+        let outcome = executor.execute_step(spec, None).await;
+
+        assert!(
+            !outcome.success,
+            "a step whose output can't satisfy the schema is demoted to failure"
+        );
+        assert_eq!(outcome.structured, None, "no validated object on failure");
+        assert!(
+            outcome.output.contains("[structured output failed"),
+            "the demotion marker is appended: {}",
+            outcome.output
+        );
+    }
+
+    #[tokio::test]
+    async fn parallel_isolates_schema_coercion_failure_from_sibling() {
+        let workspace = tempfile::tempdir().unwrap();
+        let executor: Arc<dyn AgentExecutor> = Arc::new(TaskExecutor::new(
+            Arc::new(AgentRegistry::new()),
+            Arc::new(SchemaFailClient),
+            workspace.path().to_string_lossy().to_string(),
+        ));
+        // A plain step (no schema → succeeds) alongside a schema'd step whose
+        // coercion fails. The failure must not drop or fail the sibling.
+        let specs = vec![
+            AgentStepSpec::new("plain", "general", "d", "p"),
+            AgentStepSpec::new("schemad", "general", "d", "p").with_output_schema(verdict_schema()),
+        ];
+        let out = crate::orchestration::execute_steps_parallel(executor, specs, None).await;
+
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].task_id, "plain");
+        assert!(out[0].success, "no-schema sibling unaffected");
+        assert_eq!(out[0].structured, None);
+        assert_eq!(out[1].task_id, "schemad");
+        assert!(!out[1].success, "schema-failing step surfaces as failure");
+        assert_eq!(out[1].structured, None);
+        assert!(out[1].output.contains("[structured output failed"));
+    }
+
+    #[tokio::test]
+    async fn failed_step_with_schema_skips_coercion() {
+        let workspace = tempfile::tempdir().unwrap();
+        let executor = TaskExecutor::new(
+            Arc::new(AgentRegistry::new()),
+            Arc::new(SchemaCoercionClient),
+            workspace.path().to_string_lossy().to_string(),
+        );
+        // Unknown agent → the run fails BEFORE coercion. The failure is the
+        // run error, not a coercion failure — coercion must not run.
+        let spec = AgentStepSpec::new("step-y", "no-such-agent", "d", "p")
+            .with_output_schema(verdict_schema());
+
+        let outcome = executor.execute_step(spec, None).await;
+
+        assert!(!outcome.success);
+        assert_eq!(outcome.structured, None);
+        assert!(
+            !outcome.output.contains("[structured output failed"),
+            "coercion never ran — failure is the run error, not a coercion failure: {}",
+            outcome.output
+        );
+    }
+
     struct StaticLlmClient {
         text: String,
     }

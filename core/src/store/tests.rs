@@ -808,3 +808,122 @@ async fn test_file_store_checkpoint_write_is_atomic_no_temp_leftovers() {
         "the final checkpoint file must exist, got: {names:?}"
     );
 }
+
+fn sample_workflow_checkpoint(wf_id: &str) -> crate::orchestration::WorkflowCheckpoint {
+    use crate::orchestration::{
+        StepOutcome, WorkflowCheckpoint, WorkflowStepRecord, WORKFLOW_CHECKPOINT_SCHEMA_VERSION,
+    };
+    let outcome = |id: &str, structured| StepOutcome {
+        task_id: id.to_string(),
+        session_id: format!("task-run-{id}"),
+        agent: "explore".to_string(),
+        output: format!("out-{id}"),
+        success: true,
+        structured,
+    };
+    WorkflowCheckpoint {
+        schema_version: WORKFLOW_CHECKPOINT_SCHEMA_VERSION,
+        workflow_id: wf_id.to_string(),
+        steps: vec![
+            WorkflowStepRecord {
+                task_id: "a".into(),
+                outcome: outcome("a", None),
+            },
+            WorkflowStepRecord {
+                task_id: "b".into(),
+                outcome: outcome("b", Some(serde_json::json!({ "k": 1 }))),
+            },
+        ],
+        checkpoint_ms: 1_700_000_000_000,
+    }
+}
+
+#[tokio::test]
+async fn test_file_store_workflow_checkpoint_roundtrip() {
+    let dir = tempdir().unwrap();
+    let store = FileSessionStore::new(dir.path()).await.unwrap();
+    let cp = sample_workflow_checkpoint("wf-1");
+    store.save_workflow_checkpoint("wf-1", &cp).await.unwrap();
+
+    let loaded = store
+        .load_workflow_checkpoint("wf-1")
+        .await
+        .unwrap()
+        .expect("present");
+    assert_eq!(loaded, cp);
+    assert_eq!(loaded.completed().len(), 2);
+
+    store.delete_workflow_checkpoint("wf-1").await.unwrap();
+    assert!(store
+        .load_workflow_checkpoint("wf-1")
+        .await
+        .unwrap()
+        .is_none());
+    // Idempotent on a missing file.
+    store.delete_workflow_checkpoint("wf-1").await.unwrap();
+}
+
+#[tokio::test]
+async fn test_memory_store_rejects_future_workflow_checkpoint() {
+    let store = MemorySessionStore::new();
+    let mut future = sample_workflow_checkpoint("wf-future");
+    future.schema_version = crate::orchestration::WORKFLOW_CHECKPOINT_SCHEMA_VERSION + 1;
+    store
+        .save_workflow_checkpoint("wf-future", &future)
+        .await
+        .unwrap();
+    let err = store
+        .load_workflow_checkpoint("wf-future")
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("schema version"), "got: {err}");
+
+    store
+        .save_workflow_checkpoint("wf-ok", &sample_workflow_checkpoint("wf-ok"))
+        .await
+        .unwrap();
+    assert!(store
+        .load_workflow_checkpoint("wf-ok")
+        .await
+        .unwrap()
+        .is_some());
+}
+
+#[tokio::test]
+async fn test_file_store_rejects_future_workflow_checkpoint() {
+    let dir = tempdir().unwrap();
+    let store = FileSessionStore::new(dir.path()).await.unwrap();
+    let mut future = sample_workflow_checkpoint("wf-f");
+    future.schema_version = crate::orchestration::WORKFLOW_CHECKPOINT_SCHEMA_VERSION + 1;
+    store
+        .save_workflow_checkpoint("wf-f", &future)
+        .await
+        .unwrap();
+    let err = store.load_workflow_checkpoint("wf-f").await.unwrap_err();
+    assert!(err.to_string().contains("schema version"), "got: {err}");
+}
+
+#[tokio::test]
+async fn test_file_store_workflow_checkpoint_atomic_no_temp_leftovers() {
+    let dir = tempdir().unwrap();
+    let store = FileSessionStore::new(dir.path()).await.unwrap();
+    store
+        .save_workflow_checkpoint("wf-z", &sample_workflow_checkpoint("wf-z"))
+        .await
+        .unwrap();
+
+    let ckpt_dir = dir.path().join("workflow_checkpoints");
+    let mut entries = tokio::fs::read_dir(&ckpt_dir).await.unwrap();
+    let mut names = Vec::new();
+    while let Some(e) = entries.next_entry().await.unwrap() {
+        names.push(e.file_name().to_string_lossy().to_string());
+    }
+    assert!(
+        names.iter().all(|n| !n.contains(".tmp")),
+        "no temp leftovers after atomic write, got: {names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n == "wf-z.json"),
+        "the final workflow checkpoint file must exist, got: {names:?}"
+    );
+}

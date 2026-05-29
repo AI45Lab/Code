@@ -7255,4 +7255,154 @@ mod tests {
             _ => panic!("expected streamable-http transport"),
         }
     }
+
+    // ---- orchestration conversion + pipeline-stage bridge (#43) ----
+
+    #[test]
+    fn py_to_step_spec_parses_full_dict() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let dict = PyDict::new(py);
+            dict.set_item("task_id", "t1").unwrap();
+            dict.set_item("agent", "explore").unwrap();
+            dict.set_item("description", "d").unwrap();
+            dict.set_item("prompt", "p").unwrap();
+            dict.set_item("max_steps", 5u32).unwrap();
+            dict.set_item("parent_session_id", "parent").unwrap();
+            let schema = PyDict::new(py);
+            schema.set_item("type", "object").unwrap();
+            dict.set_item("output_schema", &schema).unwrap();
+
+            let spec = py_to_step_spec(py, dict.as_any()).unwrap();
+            assert_eq!(spec.task_id, "t1");
+            assert_eq!(spec.agent, "explore");
+            assert_eq!(spec.prompt, "p");
+            assert_eq!(spec.max_steps, Some(5));
+            assert_eq!(spec.parent_session_id.as_deref(), Some("parent"));
+            assert!(spec.output_schema.is_some());
+        });
+    }
+
+    #[test]
+    fn py_to_step_spec_minimal_defaults_optionals() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let dict = PyDict::new(py);
+            dict.set_item("task_id", "t1").unwrap();
+            dict.set_item("agent", "explore").unwrap();
+            dict.set_item("description", "d").unwrap();
+            dict.set_item("prompt", "p").unwrap();
+            let spec = py_to_step_spec(py, dict.as_any()).unwrap();
+            assert_eq!(spec.max_steps, None);
+            assert_eq!(spec.parent_session_id, None);
+            assert_eq!(spec.output_schema, None);
+        });
+    }
+
+    #[test]
+    fn py_to_step_spec_missing_required_field_errors() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let dict = PyDict::new(py);
+            dict.set_item("task_id", "t1").unwrap();
+            dict.set_item("agent", "explore").unwrap();
+            dict.set_item("description", "d").unwrap();
+            // No "prompt" — a required field with no serde default.
+            let err = py_to_step_spec(py, dict.as_any()).unwrap_err();
+            assert!(
+                err.to_string().contains("AgentStepSpec") || err.to_string().contains("prompt"),
+                "got: {err}"
+            );
+        });
+    }
+
+    #[test]
+    fn step_outcome_to_py_uses_snake_case_keys() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let outcome = RustStepOutcome {
+                task_id: "t1".into(),
+                session_id: "task-run-t1".into(),
+                agent: "explore".into(),
+                output: "o".into(),
+                success: true,
+                structured: Some(serde_json::json!({ "k": 1 })),
+            };
+            let obj = step_outcome_to_py(py, &outcome).unwrap();
+            let bound = obj.bind(py);
+            let dict = bound.downcast::<PyDict>().unwrap();
+            // snake_case keys — the casing the pipeline `ctx['previous']` relies on.
+            assert_eq!(
+                dict.get_item("task_id")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "t1"
+            );
+            assert_eq!(
+                dict.get_item("session_id")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "task-run-t1"
+            );
+            assert!(dict
+                .get_item("success")
+                .unwrap()
+                .unwrap()
+                .extract::<bool>()
+                .unwrap());
+            assert!(dict.get_item("structured").unwrap().is_some());
+        });
+    }
+
+    #[test]
+    fn python_pipeline_stage_none_raise_and_spec() {
+        pyo3::prepare_freethreaded_python();
+        let (none_cb, raise_cb, spec_cb) = Python::with_gil(|py| {
+            let none_cb = py.eval(c"lambda ctx: None", None, None).unwrap().unbind();
+            // A raising stage must fail closed (caught → None), not abort.
+            let raise_cb = py.eval(c"lambda ctx: 1 / 0", None, None).unwrap().unbind();
+            // Reads ctx['previous']['task_id'] (snake_case) and returns a spec.
+            let spec_cb = py
+                .eval(
+                    c"lambda ctx: {'task_id': 'ps', 'agent': 'review', 'description': 'd', 'prompt': 'prev=' + str(ctx['previous']['task_id'])}",
+                    None,
+                    None,
+                )
+                .unwrap()
+                .unbind();
+            (none_cb, raise_cb, spec_cb)
+        });
+
+        assert!(PythonPipelineStage { callback: none_cb }
+            .invoke(None, &serde_json::json!({ "x": 1 }))
+            .is_none());
+        assert!(
+            PythonPipelineStage { callback: raise_cb }
+                .invoke(None, &serde_json::json!({ "x": 1 }))
+                .is_none(),
+            "a raising stage fails closed to None"
+        );
+
+        let prev = RustStepOutcome {
+            task_id: "prior".into(),
+            session_id: "s".into(),
+            agent: "a".into(),
+            output: "o".into(),
+            success: true,
+            structured: None,
+        };
+        let spec = PythonPipelineStage { callback: spec_cb }
+            .invoke(Some(&prev), &serde_json::json!({ "x": 1 }))
+            .expect("spec returned");
+        assert_eq!(spec.task_id, "ps");
+        assert!(
+            spec.prompt.contains("prior"),
+            "ctx['previous']['task_id'] (snake_case) was readable: {}",
+            spec.prompt
+        );
+    }
 }
