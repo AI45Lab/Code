@@ -466,8 +466,12 @@ impl SessionStore for FileSessionStore {
         let json = fs::read_to_string(&path)
             .await
             .with_context(|| format!("Failed to read loop checkpoint from {}", path.display()))?;
-        let checkpoint = serde_json::from_str(&json)
+        let checkpoint: LoopCheckpoint = serde_json::from_str(&json)
             .with_context(|| format!("Failed to parse loop checkpoint from {}", path.display()))?;
+        // Refuse to hand back a checkpoint written by a future, incompatible
+        // schema version — its field semantics may differ (see the contract
+        // on LoopCheckpoint::ensure_loadable).
+        checkpoint.ensure_loadable()?;
         Ok(Some(checkpoint))
     }
 

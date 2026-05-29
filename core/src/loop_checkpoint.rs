@@ -69,6 +69,36 @@ pub struct LoopCheckpoint {
     pub checkpoint_ms: u64,
 }
 
+impl LoopCheckpoint {
+    /// Reject a checkpoint written by a *newer*, incompatible schema
+    /// version than this build understands — honoring the contract on
+    /// [`LOOP_CHECKPOINT_SCHEMA_VERSION`].
+    ///
+    /// Field *additions* are absorbed transparently by `#[serde(default)]`,
+    /// so an older checkpoint (lower `schema_version`, including a pre-v1
+    /// `0`) always remains loadable. A *future* version, however, may have
+    /// changed the meaning of existing fields or the tool-round boundary
+    /// semantics; resuming from one risks silent corruption (e.g.
+    /// re-running a non-idempotent tool on the wrong side of the boundary).
+    ///
+    /// [`SessionStore`](crate::store::SessionStore) impls call this right
+    /// after deserialization, so both `resume_run` (which surfaces the
+    /// error to the caller) and the live-run [`LoopCheckpointSink`] (which
+    /// logs and starts fresh) refuse to act on an unreadable checkpoint.
+    pub fn ensure_loadable(&self) -> anyhow::Result<()> {
+        if self.schema_version > LOOP_CHECKPOINT_SCHEMA_VERSION {
+            anyhow::bail!(
+                "loop checkpoint for run {} has schema version {} but this build supports at \
+                 most {}; refusing to resume from an incompatible future checkpoint",
+                self.run_id,
+                self.schema_version,
+                LOOP_CHECKPOINT_SCHEMA_VERSION
+            );
+        }
+        Ok(())
+    }
+}
+
 /// Receiver of per-tool-round checkpoints.
 ///
 /// The framework ships one adapter:

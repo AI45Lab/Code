@@ -154,7 +154,15 @@ impl SessionStore for MemorySessionStore {
     }
 
     async fn load_loop_checkpoint(&self, run_id: &str) -> Result<Option<LoopCheckpoint>> {
-        Ok(self.loop_checkpoints.read().await.get(run_id).cloned())
+        match self.loop_checkpoints.read().await.get(run_id).cloned() {
+            // Enforce the same future-schema rejection as the file store so
+            // the contract holds uniformly across backends.
+            Some(cp) => {
+                cp.ensure_loadable()?;
+                Ok(Some(cp))
+            }
+            None => Ok(None),
+        }
     }
 
     async fn delete_loop_checkpoint(&self, run_id: &str) -> Result<()> {
