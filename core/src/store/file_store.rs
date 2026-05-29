@@ -1,5 +1,6 @@
 use super::{SessionData, SessionStore};
 use crate::loop_checkpoint::LoopCheckpoint;
+use crate::orchestration::WorkflowCheckpoint;
 use crate::run::RunRecord;
 use crate::subagent_task_tracker::SubagentTaskSnapshot;
 use crate::tools::ArtifactStore;
@@ -80,6 +81,12 @@ impl FileSessionStore {
         self.dir
             .join("loop_checkpoints")
             .join(format!("{}.json", safe_session_id(run_id)))
+    }
+
+    fn workflow_checkpoint_path(&self, workflow_id: &str) -> PathBuf {
+        self.dir
+            .join("workflow_checkpoints")
+            .join(format!("{}.json", safe_session_id(workflow_id)))
     }
 }
 
@@ -482,6 +489,92 @@ impl SessionStore for FileSessionStore {
                 format!(
                     "Failed to delete loop checkpoint for run {}: {}",
                     run_id,
+                    path.display()
+                )
+            })?;
+        }
+        Ok(())
+    }
+
+    async fn save_workflow_checkpoint(
+        &self,
+        workflow_id: &str,
+        checkpoint: &WorkflowCheckpoint,
+    ) -> Result<()> {
+        let path = self.workflow_checkpoint_path(workflow_id);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).await.with_context(|| {
+                format!(
+                    "Failed to create workflow checkpoint directory: {}",
+                    parent.display()
+                )
+            })?;
+        }
+        let json = serde_json::to_string_pretty(checkpoint).with_context(|| {
+            format!("Failed to serialize workflow checkpoint for {workflow_id}")
+        })?;
+
+        // Crash-atomic write (temp + fsync + rename) — same rationale as
+        // loop checkpoints: a truncated checkpoint would fail to resume.
+        let unique_suffix = format!(
+            "{}.{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+            std::process::id()
+        );
+        let temp_path = path.with_extension(format!("json.{}.tmp", unique_suffix));
+        let mut file = fs::File::create(&temp_path).await.with_context(|| {
+            format!(
+                "Failed to create workflow checkpoint temp file: {}",
+                temp_path.display()
+            )
+        })?;
+        file.write_all(json.as_bytes())
+            .await
+            .with_context(|| format!("Failed to write workflow checkpoint for {workflow_id}"))?;
+        file.sync_all()
+            .await
+            .with_context(|| format!("Failed to fsync workflow checkpoint for {workflow_id}"))?;
+        fs::rename(&temp_path, &path).await.with_context(|| {
+            format!(
+                "Failed to rename workflow checkpoint into place: {}",
+                path.display()
+            )
+        })?;
+        Ok(())
+    }
+
+    async fn load_workflow_checkpoint(
+        &self,
+        workflow_id: &str,
+    ) -> Result<Option<WorkflowCheckpoint>> {
+        let path = self.workflow_checkpoint_path(workflow_id);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let json = fs::read_to_string(&path).await.with_context(|| {
+            format!("Failed to read workflow checkpoint from {}", path.display())
+        })?;
+        let checkpoint: WorkflowCheckpoint = serde_json::from_str(&json).with_context(|| {
+            format!(
+                "Failed to parse workflow checkpoint from {}",
+                path.display()
+            )
+        })?;
+        // Refuse a future, incompatible schema version (see ensure_loadable).
+        checkpoint.ensure_loadable()?;
+        Ok(Some(checkpoint))
+    }
+
+    async fn delete_workflow_checkpoint(&self, workflow_id: &str) -> Result<()> {
+        let path = self.workflow_checkpoint_path(workflow_id);
+        if path.exists() {
+            fs::remove_file(&path).await.with_context(|| {
+                format!(
+                    "Failed to delete workflow checkpoint for {}: {}",
+                    workflow_id,
                     path.display()
                 )
             })?;

@@ -21,8 +21,10 @@
 //!
 //! The in-box implementation is [`crate::tools::TaskExecutor`].
 
+mod checkpoint;
 mod combinators;
 mod executor;
 
-pub use combinators::{execute_pipeline, PipelineStage};
+pub use checkpoint::{WorkflowCheckpoint, WorkflowStepRecord, WORKFLOW_CHECKPOINT_SCHEMA_VERSION};
+pub use combinators::{execute_pipeline, execute_steps_parallel_resumable, PipelineStage};
 pub use executor::{execute_steps_parallel, AgentExecutor, AgentStepSpec, StepOutcome};

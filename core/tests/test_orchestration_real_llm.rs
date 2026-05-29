@@ -13,8 +13,10 @@ use std::sync::Arc;
 use a3s_code_core::config::CodeConfig;
 use a3s_code_core::llm::create_client_with_config;
 use a3s_code_core::orchestration::{
-    execute_pipeline, AgentExecutor, AgentStepSpec, PipelineStage, StepOutcome,
+    execute_pipeline, execute_steps_parallel_resumable, AgentExecutor, AgentStepSpec,
+    PipelineStage, StepOutcome,
 };
+use a3s_code_core::store::{MemorySessionStore, SessionStore};
 use a3s_code_core::subagent::AgentRegistry;
 use a3s_code_core::tools::TaskExecutor;
 
@@ -147,5 +149,38 @@ async fn real_pipeline_chains_two_agent_stages() {
     assert!(
         !final_outcome.output.trim().is_empty(),
         "stage 2 produced output derived from stage 1"
+    );
+}
+
+/// Phase 4: a resumable workflow runs real steps, journals progress to a
+/// store, and clears its checkpoint on full success.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires real provider credentials and network access"]
+async fn real_resumable_workflow_runs_and_clears_checkpoint() {
+    let (executor, _workspace) = local_executor();
+    let exec: Arc<dyn AgentExecutor> = Arc::new(executor);
+    let store: Arc<dyn SessionStore> = Arc::new(MemorySessionStore::new());
+
+    let specs = vec![
+        AgentStepSpec::new("rw-1", "general", "q1", "Reply with one word: ready").with_max_steps(2),
+        AgentStepSpec::new("rw-2", "general", "q2", "Reply with one word: go").with_max_steps(2),
+    ];
+
+    let out =
+        execute_steps_parallel_resumable(exec, specs, "real-wf", Arc::clone(&store), None).await;
+
+    assert_eq!(out.len(), 2);
+    assert!(
+        out.iter().all(|o| o.success),
+        "both steps succeed: {:?}",
+        out.iter().map(|o| &o.output).collect::<Vec<_>>()
+    );
+    assert!(
+        store
+            .load_workflow_checkpoint("real-wf")
+            .await
+            .unwrap()
+            .is_none(),
+        "a fully-succeeded workflow clears its checkpoint"
     );
 }

@@ -5,11 +5,21 @@
 //! one genuinely new scheduling shape, where each item flows through a chain
 //! of stages independently — no barrier between stages.
 
+use super::checkpoint::WorkflowCheckpoint;
 use super::executor::{AgentExecutor, AgentStepSpec, StepOutcome};
 use crate::agent::AgentEvent;
 use crate::ordered_parallel::run_ordered_parallel_with_limit;
+use crate::store::SessionStore;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::broadcast;
+
+fn now_epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
 
 /// A pipeline stage: given the previous stage's outcome (`None` before the
 /// first stage) and the original item, produce the next step to run — or
@@ -73,6 +83,123 @@ where
         .into_iter()
         .map(|result| result.output.unwrap_or(None))
         .collect()
+}
+
+/// Like [`execute_steps_parallel`](super::execute_steps_parallel), but
+/// **resumable**: progress is journaled to `store` under `workflow_id`, so an
+/// interrupted run picks up from the last completed step.
+///
+/// On entry, any steps already recorded in a prior checkpoint are skipped and
+/// their cached outcomes reused; only the rest are dispatched. As each step
+/// completes, the checkpoint is rewritten (the step boundary), so a crash
+/// mid-run loses at most the in-flight steps. Because the checkpoint is
+/// serializable and the executor is a parameter, a host can resume an
+/// interrupted workflow on a *different* node by passing that node's executor.
+///
+/// Results are returned in the original `specs` order. On full success the
+/// checkpoint is deleted (the workflow is terminal); only a crash leaves one
+/// behind for resume.
+pub async fn execute_steps_parallel_resumable(
+    executor: Arc<dyn AgentExecutor>,
+    specs: Vec<AgentStepSpec>,
+    workflow_id: &str,
+    store: Arc<dyn SessionStore>,
+    event_tx: Option<broadcast::Sender<AgentEvent>>,
+) -> Vec<StepOutcome> {
+    // Prior progress (the store's load rejects a future-version checkpoint).
+    let done: HashMap<String, StepOutcome> = match store.load_workflow_checkpoint(workflow_id).await
+    {
+        Ok(Some(cp)) => cp.completed(),
+        _ => HashMap::new(),
+    };
+
+    let pending: Vec<AgentStepSpec> = specs
+        .iter()
+        .filter(|s| !done.contains_key(&s.task_id))
+        .cloned()
+        .collect();
+    let labels: Vec<(String, String)> = pending
+        .iter()
+        .map(|s| (s.task_id.clone(), s.agent.clone()))
+        .collect();
+
+    // Accumulator seeded with prior progress; persisted at every step boundary.
+    let acc = Arc::new(tokio::sync::Mutex::new(done.clone()));
+    let limit = executor.concurrency_hint();
+    let workflow_id_owned = workflow_id.to_string();
+    let store_steps = Arc::clone(&store);
+
+    let results = run_ordered_parallel_with_limit(pending, limit, move |_idx, spec| {
+        let executor = Arc::clone(&executor);
+        let event_tx = event_tx.clone();
+        let acc = Arc::clone(&acc);
+        let store = Arc::clone(&store_steps);
+        let workflow_id = workflow_id_owned.clone();
+        async move {
+            let outcome = executor.execute_step(spec, event_tx).await;
+            // Step boundary: record only *successful* steps, so a failed step
+            // is retried on resume (its effect didn't complete) while a
+            // succeeded step's work is never redone.
+            if outcome.success {
+                let mut guard = acc.lock().await;
+                guard.insert(outcome.task_id.clone(), outcome.clone());
+                let checkpoint =
+                    WorkflowCheckpoint::from_completed(&workflow_id, &guard, now_epoch_ms());
+                if let Err(e) = store
+                    .save_workflow_checkpoint(&workflow_id, &checkpoint)
+                    .await
+                {
+                    // Losing a checkpoint must not fail the live run.
+                    tracing::warn!(
+                        workflow_id = %workflow_id,
+                        error = %e,
+                        "workflow checkpoint save failed; run continues"
+                    );
+                }
+            }
+            outcome
+        }
+    })
+    .await;
+
+    let mut fresh: HashMap<String, StepOutcome> = HashMap::new();
+    for result in results {
+        match result.output {
+            Ok(outcome) => {
+                fresh.insert(outcome.task_id.clone(), outcome);
+            }
+            Err(error) => {
+                if let Some((task_id, agent)) = labels.get(result.index).cloned() {
+                    fresh.insert(
+                        task_id.clone(),
+                        StepOutcome::failed(task_id, agent, error.to_string()),
+                    );
+                }
+            }
+        }
+    }
+
+    // Merge cached + freshly-run, in the original spec order.
+    let merged: Vec<StepOutcome> = specs
+        .iter()
+        .map(|s| {
+            done.get(&s.task_id)
+                .cloned()
+                .or_else(|| fresh.remove(&s.task_id))
+                .unwrap_or_else(|| {
+                    StepOutcome::failed(
+                        s.task_id.clone(),
+                        s.agent.clone(),
+                        "step produced no outcome",
+                    )
+                })
+        })
+        .collect();
+
+    if merged.iter().all(|o| o.success) {
+        let _ = store.delete_workflow_checkpoint(workflow_id).await;
+    }
+    merged
 }
 
 #[cfg(test)]
@@ -236,5 +363,127 @@ mod tests {
         assert!(out[0].as_ref().unwrap().success);
         assert!(out[1].is_none(), "panicked chain becomes None, not a drop");
         assert!(out[2].as_ref().unwrap().success, "later chains unaffected");
+    }
+
+    /// Records which task ids it actually ran; always succeeds.
+    struct RecordingExecutor {
+        ran: Arc<tokio::sync::Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl AgentExecutor for RecordingExecutor {
+        async fn execute_step(
+            &self,
+            spec: AgentStepSpec,
+            _event_tx: Option<broadcast::Sender<AgentEvent>>,
+        ) -> StepOutcome {
+            self.ran.lock().await.push(spec.task_id.clone());
+            StepOutcome {
+                task_id: spec.task_id.clone(),
+                session_id: format!("task-run-{}", spec.task_id),
+                agent: spec.agent.clone(),
+                output: format!("ran:{}", spec.task_id),
+                success: true,
+                structured: None,
+            }
+        }
+        fn concurrency_hint(&self) -> usize {
+            4
+        }
+    }
+
+    #[tokio::test]
+    async fn resumable_skips_completed_then_clears_on_success() {
+        use crate::store::MemorySessionStore;
+        let store: Arc<dyn SessionStore> = Arc::new(MemorySessionStore::new());
+
+        // Pre-seed: step "a" already completed on a prior run (possibly on
+        // another node — this exercises the migration path too).
+        let mut done = std::collections::HashMap::new();
+        done.insert(
+            "a".to_string(),
+            StepOutcome {
+                task_id: "a".into(),
+                session_id: "task-run-a".into(),
+                agent: "explore".into(),
+                output: "cached-a".into(),
+                success: true,
+                structured: None,
+            },
+        );
+        store
+            .save_workflow_checkpoint(
+                "wf-1",
+                &WorkflowCheckpoint::from_completed("wf-1", &done, 1),
+            )
+            .await
+            .unwrap();
+
+        // A FRESH executor resumes (the node that runs the rest is not the one
+        // that completed "a").
+        let ran = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let exec: Arc<dyn AgentExecutor> = Arc::new(RecordingExecutor {
+            ran: Arc::clone(&ran),
+        });
+        let specs = vec![
+            AgentStepSpec::new("a", "explore", "d", "pa"),
+            AgentStepSpec::new("b", "review", "d", "pb"),
+        ];
+
+        let out =
+            execute_steps_parallel_resumable(exec, specs, "wf-1", Arc::clone(&store), None).await;
+
+        assert_eq!(
+            *ran.lock().await,
+            vec!["b".to_string()],
+            "only the not-yet-completed step runs"
+        );
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].task_id, "a");
+        assert_eq!(
+            out[0].output, "cached-a",
+            "completed step returns its cached outcome, unchanged"
+        );
+        assert_eq!(out[1].task_id, "b");
+        assert!(out.iter().all(|o| o.success));
+        assert!(
+            store
+                .load_workflow_checkpoint("wf-1")
+                .await
+                .unwrap()
+                .is_none(),
+            "a fully-succeeded workflow clears its checkpoint"
+        );
+    }
+
+    #[tokio::test]
+    async fn resumable_retains_checkpoint_recording_only_successes_on_partial_failure() {
+        use crate::store::MemorySessionStore;
+        let store: Arc<dyn SessionStore> = Arc::new(MemorySessionStore::new());
+        // EchoExecutor fails the agent named "fail".
+        let exec: Arc<dyn AgentExecutor> = Arc::new(EchoExecutor::new());
+        let specs = vec![
+            AgentStepSpec::new("ok", "explore", "d", "p"),
+            AgentStepSpec::new("bad", "fail", "d", "p"),
+        ];
+
+        let out =
+            execute_steps_parallel_resumable(exec, specs, "wf-2", Arc::clone(&store), None).await;
+        assert!(out[0].success);
+        assert!(!out[1].success);
+
+        // Not all succeeded → checkpoint retained, recording only the success
+        // so the failed step retries on resume.
+        let cp = store
+            .load_workflow_checkpoint("wf-2")
+            .await
+            .unwrap()
+            .expect("checkpoint retained on partial failure");
+        let completed = cp.completed();
+        assert!(completed.contains_key("ok"), "succeeded step is recorded");
+        assert!(
+            !completed.contains_key("bad"),
+            "failed step is NOT recorded → it retries on resume"
+        );
     }
 }

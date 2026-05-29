@@ -1,5 +1,6 @@
 use super::{SessionData, SessionStore};
 use crate::loop_checkpoint::LoopCheckpoint;
+use crate::orchestration::WorkflowCheckpoint;
 use crate::run::RunRecord;
 use crate::subagent_task_tracker::SubagentTaskSnapshot;
 use crate::tools::ArtifactStore;
@@ -21,6 +22,7 @@ pub struct MemorySessionStore {
     verification_reports: tokio::sync::RwLock<HashMap<String, Vec<VerificationReport>>>,
     subagent_tasks: tokio::sync::RwLock<HashMap<String, Vec<SubagentTaskSnapshot>>>,
     loop_checkpoints: tokio::sync::RwLock<HashMap<String, LoopCheckpoint>>,
+    workflow_checkpoints: tokio::sync::RwLock<HashMap<String, WorkflowCheckpoint>>,
 }
 
 impl MemorySessionStore {
@@ -33,6 +35,7 @@ impl MemorySessionStore {
             verification_reports: tokio::sync::RwLock::new(HashMap::new()),
             subagent_tasks: tokio::sync::RwLock::new(HashMap::new()),
             loop_checkpoints: tokio::sync::RwLock::new(HashMap::new()),
+            workflow_checkpoints: tokio::sync::RwLock::new(HashMap::new()),
         }
     }
 }
@@ -167,6 +170,42 @@ impl SessionStore for MemorySessionStore {
 
     async fn delete_loop_checkpoint(&self, run_id: &str) -> Result<()> {
         self.loop_checkpoints.write().await.remove(run_id);
+        Ok(())
+    }
+
+    async fn save_workflow_checkpoint(
+        &self,
+        workflow_id: &str,
+        checkpoint: &WorkflowCheckpoint,
+    ) -> Result<()> {
+        self.workflow_checkpoints
+            .write()
+            .await
+            .insert(workflow_id.to_string(), checkpoint.clone());
+        Ok(())
+    }
+
+    async fn load_workflow_checkpoint(
+        &self,
+        workflow_id: &str,
+    ) -> Result<Option<WorkflowCheckpoint>> {
+        match self
+            .workflow_checkpoints
+            .read()
+            .await
+            .get(workflow_id)
+            .cloned()
+        {
+            Some(cp) => {
+                cp.ensure_loadable()?;
+                Ok(Some(cp))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn delete_workflow_checkpoint(&self, workflow_id: &str) -> Result<()> {
+        self.workflow_checkpoints.write().await.remove(workflow_id);
         Ok(())
     }
 

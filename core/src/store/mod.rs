@@ -170,6 +170,34 @@ pub trait SessionStore: Send + Sync {
         Ok(())
     }
 
+    /// Persist a workflow checkpoint, overwriting any earlier one for the same
+    /// `workflow_id`. The resumable orchestration combinators call this at each
+    /// step boundary so an interrupted workflow resumes from the last
+    /// completed step (here or, after migration, on another node).
+    async fn save_workflow_checkpoint(
+        &self,
+        _workflow_id: &str,
+        _checkpoint: &crate::orchestration::WorkflowCheckpoint,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Load the latest workflow checkpoint for `workflow_id`.
+    async fn load_workflow_checkpoint(
+        &self,
+        _workflow_id: &str,
+    ) -> Result<Option<crate::orchestration::WorkflowCheckpoint>> {
+        Ok(None)
+    }
+
+    /// Delete the workflow checkpoint for `workflow_id`, if present. Called
+    /// when a workflow reaches a terminal state in-process; only a crash should
+    /// leave one behind for resume. Deleting a non-existent checkpoint is a
+    /// no-op success.
+    async fn delete_workflow_checkpoint(&self, _workflow_id: &str) -> Result<()> {
+        Ok(())
+    }
+
     /// Health check — verify the store backend is reachable and operational
     async fn health_check(&self) -> Result<()> {
         Ok(())
