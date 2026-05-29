@@ -186,7 +186,11 @@ class EnsureNativeLoadedTests(unittest.TestCase):
         ):
             cache = _bootstrap.ensure_native_loaded("3.2.1")
 
-        self.assertEqual(cache, Path(self._tmp) / "3.2.1")
+        # `_cache_root()` keys the cache dir on the module's own __version__,
+        # not the version arg passed to `ensure_native_loaded`. Reference it
+        # directly so this assertion can't go stale on a version bump (the
+        # sibling CacheDirTests follow the same pattern).
+        self.assertEqual(cache, Path(self._tmp) / _bootstrap.__version__)
         # Native file extracted at cache root, not under a subdirectory.
         extracted = list(cache.glob("_native.*"))
         self.assertEqual(len(extracted), 1)
