@@ -21,6 +21,8 @@
 //!
 //! The in-box implementation is [`crate::tools::TaskExecutor`].
 
+mod combinators;
 mod executor;
 
+pub use combinators::{execute_pipeline, PipelineStage};
 pub use executor::{execute_steps_parallel, AgentExecutor, AgentStepSpec, StepOutcome};

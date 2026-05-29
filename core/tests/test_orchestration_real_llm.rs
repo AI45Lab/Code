@@ -12,7 +12,9 @@ use std::sync::Arc;
 
 use a3s_code_core::config::CodeConfig;
 use a3s_code_core::llm::create_client_with_config;
-use a3s_code_core::orchestration::{AgentExecutor, AgentStepSpec};
+use a3s_code_core::orchestration::{
+    execute_pipeline, AgentExecutor, AgentStepSpec, PipelineStage, StepOutcome,
+};
 use a3s_code_core::subagent::AgentRegistry;
 use a3s_code_core::tools::TaskExecutor;
 
@@ -89,5 +91,61 @@ async fn real_execute_step_with_schema_returns_validated_object() {
             .map(|v| v.is_boolean())
             .unwrap_or(false),
         "object has a boolean `is_systems_language`: {object}"
+    );
+}
+
+/// Phase 3: a two-stage pipeline chains live agents — stage 2's prompt is
+/// derived from stage 1's output, with no barrier between them.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires real provider credentials and network access"]
+async fn real_pipeline_chains_two_agent_stages() {
+    let (executor, _workspace) = local_executor();
+    let exec: Arc<dyn AgentExecutor> = Arc::new(executor);
+
+    let stages: Vec<PipelineStage<&str>> = vec![
+        Arc::new(|_prev: Option<&StepOutcome>, topic: &&str| {
+            Some(
+                AgentStepSpec::new(
+                    "real-p1",
+                    "general",
+                    "summarize",
+                    format!("In one sentence, what is {topic}?"),
+                )
+                .with_max_steps(2),
+            )
+        }),
+        Arc::new(|prev: Option<&StepOutcome>, _topic: &&str| {
+            let summary = prev.map(|o| o.output.clone()).unwrap_or_default();
+            Some(
+                AgentStepSpec::new(
+                    "real-p2",
+                    "general",
+                    "classify",
+                    format!(
+                        "Reply with exactly one word, YES or NO: does this describe a \
+                         programming language?\n\nText: {summary}"
+                    ),
+                )
+                .with_max_steps(2),
+            )
+        }),
+    ];
+
+    let out = execute_pipeline(exec, vec!["the Rust programming language"], stages, None).await;
+
+    assert_eq!(out.len(), 1);
+    let final_outcome = out[0].as_ref().expect("the chain produced a final outcome");
+    assert!(
+        final_outcome.success,
+        "pipeline chain succeeded: {}",
+        final_outcome.output
+    );
+    assert_eq!(
+        final_outcome.task_id, "real-p2",
+        "the returned outcome is the last stage's"
+    );
+    assert!(
+        !final_outcome.output.trim().is_empty(),
+        "stage 2 produced output derived from stage 1"
     );
 }

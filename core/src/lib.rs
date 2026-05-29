@@ -135,7 +135,10 @@ pub use llm::{
     ContentBlock, HttpMetricsCallback, HttpMetricsRecord, ImageSource, LlmClient, LlmResponse,
     Message, OpenAiClient, TokenUsage,
 };
-pub use orchestration::{execute_steps_parallel, AgentExecutor, AgentStepSpec, StepOutcome};
+pub use orchestration::{
+    execute_pipeline, execute_steps_parallel, AgentExecutor, AgentStepSpec, PipelineStage,
+    StepOutcome,
+};
 pub use prompts::{AgentStyle, DetectionConfidence, PlanningMode, SystemPromptSlots};
 pub use run::{
     ActiveToolSnapshot, InMemoryRunStore, RunEventRecord, RunHandle, RunRecord, RunSnapshot,
