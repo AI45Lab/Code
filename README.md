@@ -571,6 +571,69 @@ session2.setBudgetGuard({
 
 ---
 
+## Programmable Orchestration
+
+Beyond *model-driven* delegation (the agent calling `task`/`parallel_task`), a
+session exposes a **deterministic, programmable** orchestration grammar: you
+decide the fan-out, chaining, and resume in code. Steps run through the
+session's `AgentExecutor`; a host (书安OS) can substitute its own executor to
+place steps across a cluster — the grammar is identical either way.
+
+A **step** is `{ task_id, agent, description, prompt, max_steps?,
+parent_session_id?, output_schema? }`. With `output_schema`, the step returns a
+schema-validated object in `structured`.
+
+```python
+# Fan out N steps; results come back in input order. A failed step is
+# success=False, not a thrown error.
+outcomes = session.parallel([
+    {"task_id": "a", "agent": "explore", "description": "find auth", "prompt": "Where is auth handled?"},
+    {"task_id": "b", "agent": "review",  "description": "review",    "prompt": "Review src/auth.rs",
+     "output_schema": {"type": "object", "properties": {"verdict": {"type": "string"}}, "required": ["verdict"]}},
+])
+print(outcomes[1]["structured"])   # {"verdict": "..."}
+
+# Pipeline: each item flows through stages with NO barrier between them —
+# item A can be in stage 2 while item B is still in stage 1. A stage returns
+# the next step (deriving from the previous outcome) or None to stop.
+results = session.pipeline(
+    ["src/auth.rs", "src/db.rs"],
+    [
+        lambda ctx: {"task_id": "rev", "agent": "review", "description": "review", "prompt": f"Review {ctx['item']}"},
+        lambda ctx: {"task_id": "fix", "agent": "general", "description": "verify",
+                     "prompt": f"Verify this review: {ctx['previous']['output']}"},
+    ],
+)
+
+# Resumable: progress is journaled under a workflow id via the session store,
+# so an interrupted run (or one resumed on another node) skips completed steps.
+outcomes = session.parallel_resumable(specs, "nightly-audit")
+```
+
+```javascript
+// Node — identical shapes, camelCase. Promises resolve to the same outcomes.
+const outcomes = await session.parallel([
+  { taskId: "a", agent: "explore", description: "find auth", prompt: "Where is auth handled?" },
+  { taskId: "b", agent: "review",  description: "review",    prompt: "Review src/auth.rs" },
+]);
+
+const results = await session.pipeline(
+  ["src/auth.rs", "src/db.rs"],
+  [
+    (ctx) => ({ taskId: "rev", agent: "review", description: "review", prompt: `Review ${ctx.item}` }),
+    (ctx) => ({ taskId: "fix", agent: "general", description: "verify",
+                prompt: `Verify this review: ${ctx.previous.output}` }),
+  ],
+);
+
+await session.parallelResumable(specs, "nightly-audit");
+// NOTE: pipeline stage callbacks MUST NOT throw — return null to stop a chain.
+// A throw aborts the process (same constraint as setBudgetGuard). A stage that
+// hangs past timeoutMs (default 30s) fails closed (treated as null).
+```
+
+---
+
 ## Design Principles
 
 ### 1. Small Kernel
