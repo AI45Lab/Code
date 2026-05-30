@@ -5,6 +5,79 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.0] - 2026-05-30
+
+Programmable, deterministic multi-agent orchestration — a grammar for
+expressing fan-out, pipelines, and resumable workflows in code (not only via
+model-driven delegation), drawn along the framework / host (书安OS) boundary:
+the framework owns the grammar + serializable contracts; the host owns
+placement, transport, and scheduling. All additions are backward compatible
+(new types/methods, new optional fields, new `SessionStore` methods with
+default no-op impls).
+
+### Added
+
+- **`AgentExecutor` seam** (`orchestration` module) — the boundary between the
+  orchestration grammar and the host's placement/transport/scheduling. The
+  in-box `TaskExecutor` runs each step as a child agent locally; a host
+  substitutes its own executor to place steps across a cluster.
+  `concurrency_hint()` is advisory, not a hard local bound, so orchestration
+  scales past a single process. `AgentSession::agent_executor()` /
+  `session_store()` expose a session-backed executor + its store.
+- **Serializable step contracts** — `AgentStepSpec` (`task_id` / `agent` /
+  `description` / `prompt` / `max_steps?` / `parent_session_id?` /
+  `output_schema?`) and `StepOutcome` (`+ structured?`), serializable for
+  cross-node transport and checkpoints.
+- **Combinators** —
+  - `execute_steps_parallel` — barrier fan-out, input-order preserving,
+    per-branch panic isolation, bounded by the executor's concurrency hint.
+  - `execute_pipeline` — per-item chains through stages with **no inter-stage
+    barrier** (item A can be in stage 3 while item B is still in stage 1);
+    stages are pure spec-builders that branch on the prior outcome.
+  - `execute_steps_parallel_resumable` — journals completed steps to a
+    `SessionStore` at each step boundary; on resume it skips completed steps
+    and re-dispatches the rest. Records only successful steps (a failed step
+    retries on resume). The checkpoint is serializable, so a host can resume an
+    interrupted workflow on a *different* node.
+- **Schema-forced step output** — a step carrying `output_schema` returns a
+  schema-validated object in `StepOutcome.structured` (reuses the
+  structured-output coercion + repair). A coercion failure demotes the step to
+  unsuccessful, so callers never treat unvalidated text as the promised object.
+- **`WorkflowCheckpoint`** (`schema_version` / `workflow_id` / `steps` /
+  `checkpoint_ms`) + `SessionStore::{save,load,delete}_workflow_checkpoint`
+  (default no-ops; the file store writes crash-atomically). Loads from a
+  future, incompatible schema version are rejected.
+- **SDK grammar (Node + Python)** — `session.parallel(specs)`,
+  `session.pipeline(items, stages)`, `session.parallelResumable(specs,
+  workflowId)` (Node, camelCase) / `parallel` / `pipeline` /
+  `parallel_resumable` (Python, snake_case). Pipeline stages are JS/Python
+  callbacks `(ctx) -> spec | null`; the bridges fail closed — a hung,
+  null-returning, or raising stage stops only its own chain. (A Node stage
+  callback must not throw — return `null` on error, same constraint as
+  `setBudgetGuard`.)
+- **`LoopCheckpoint::ensure_loadable()`** — loads from a future, incompatible
+  loop-checkpoint schema version are now rejected at the store layer (both
+  file and memory), honoring the documented contract.
+
+### Changed
+
+- The resumable combinator now distinguishes "no checkpoint" from an
+  *unreadable* one: an unreadable (e.g. future-version) checkpoint logs a
+  warning and re-runs the workflow from scratch rather than silently swallowing
+  the error.
+- Documented the FFI panic-safety contract in each SDK's module doc (napi 2.x
+  does not catch panics in sync `#[napi]` bodies by default; PyO3 0.23 catches
+  `#[pyfunction]` / `#[pymethods]` bodies). No code change — both boundaries
+  were audited panic-safe.
+
+### Tests
+
+- Persisted-schema round-trip fuzz extended to the new migratable types
+  (`AgentStepSpec`, `StepOutcome`, `WorkflowCheckpoint`) — round-trip stability
+  + forward/backward compat. Comprehensive unit **and** real-LLM integration
+  tests for the orchestration layer (parallel fan-out, multi-item pipeline, the
+  resume path, nested-schema coercion) run against `.a3s/config.acl`.
+
 ## [3.3.0] - 2026-05-29
 
 Cluster-grade runtime: everything needed for a host platform (e.g. 书安OS)

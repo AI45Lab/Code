@@ -7,7 +7,7 @@ name = "a3s-code"
 # Keep in sync with crates/code core release. The bootstrap loader fetches
 # the matching native wheel from `https://github.com/AI45Lab/Code/releases/tag/v<version>`
 # at import time.
-version = "3.3.0"
+version = "3.4.0"
 description = "A3S Code Python SDK — pure-Python bootstrap that fetches the native wheel from GitHub Releases"
 readme = "README.md"
 license = {text = "MIT"}
