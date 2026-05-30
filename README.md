@@ -33,48 +33,38 @@ Intent -> Context -> Action -> Observation -> Verification -> Compaction
 
 Everything else is an extension of that loop.
 
-### What's new in 3.2
+### What's new in 3.4
 
-- **Subagent task tracker** — every delegated child run is now observable
-  through a queryable view fed by the existing `subagent_start` /
-  `subagent_progress` / `subagent_end` event stream. The new
-  `AgentSession::subagent_task(id)`, `subagent_tasks()`, and
-  `pending_subagent_tasks()` APIs (mirrored on Node and Python) let
-  dashboards introspect child runs without scanning `run_events()`.
-- **Mid-task progress milestones** — the child loop forwarder now
-  synthesizes `SubagentProgress` events for `tool_completed` and
-  `turn_completed`, so callers see intermediate state instead of just
-  Start → End.
-- **Cancel by task id** — `AgentSession::cancel_subagent_task(id)`
-  (and `session.cancelSubagentTask` / `session.cancel_subagent_task`
-  on the SDKs) interrupts an in-flight delegated run without
-  cancelling the parent. A late `SubagentEnd` from a cancelled child
-  does not downgrade the terminal status — it stays `Cancelled`.
+- **Programmable orchestration** — a deterministic, code-expressed
+  multi-agent grammar that complements model-driven `task`/`parallel_task`
+  delegation: you decide the fan-out, chaining, and resume in code. Serializable
+  `AgentStepSpec` / `StepOutcome` contracts flow through an `AgentExecutor`
+  seam, so the framework owns the *grammar* and a host (书安OS) owns
+  *placement*. Combinators: `execute_steps_parallel` (barrier fan-out),
+  `execute_pipeline` / `PipelineStage` (per-item chains, no inter-stage
+  barrier), and `execute_steps_parallel_resumable` + `WorkflowCheckpoint`
+  (journaled, cross-node-resumable). A step's `output_schema` forces
+  schema-validated output into `StepOutcome.structured`. SDK grammar:
+  `session.parallel` / `pipeline` / `parallelResumable` (Node) and
+  `parallel` / `pipeline` / `parallel_resumable` (Python). See
+  [Programmable Orchestration](#programmable-orchestration) below.
 
-Full migration notes are in [CHANGELOG.md](./CHANGELOG.md). The
-`TaskExecutor` signature additions and the `SubagentStatus` variant
-addition are the only breaking changes; `SubagentStatus` is now
-`#[non_exhaustive]` so future variants are non-breaking.
+### What's new in 3.3
 
-### What's new in 3.0
+- **Cluster-grade runtime** — graceful lifecycle (`AgentSession::close()` /
+  `is_closed()`, `Agent::list_sessions()` / `close_session()` / `close()`),
+  host identity labels (`tenant_id` / `principal` / `agent_template_id` /
+  `correlation_id`) persisted in `SessionData`, the `BudgetGuard` cost/quota
+  contract (`check_before_llm` / `record_after_llm` / `check_before_tool`;
+  `Deny` → `CodeError::BudgetExhausted`, `SoftLimit` → `BudgetThresholdHit`),
+  loop checkpoints + `resume_run(run_id)` across nodes, `SessionRetentionLimits`
+  FIFO caps, `McpManager::disconnect_idle` / `Agent::disconnect_idle_mcp`, and
+  new cluster `AgentEvent` variants (`BudgetThresholdHit` /
+  `PassivationRequested` / `PeerInvocation`).
 
-- **Cloud-native workspace** — `S3WorkspaceBackend` with ETag
-  compare-and-swap for `edit`/`patch`, opt-in degraded `grep`/`glob`,
-  and per-call cost metering via structured `tracing` events. Pair
-  with `RemoteGitBackend` (HTTP/JSON, bearer or mTLS) to keep the
-  `git` tool available on workspaces that have no `.git` directory.
-- **Typed tool errors end-to-end** — `WorkspaceFileSystem` returns
-  `WorkspaceResult<T>` over a `#[non_exhaustive] WorkspaceError`
-  enum, and the discriminator surfaces at the SDK boundary as a
-  `ToolErrorKind` (`errorKindJson` in Node, `error_kind` dict in
-  Python). SDK callers branch on `.type` instead of regex-matching
-  the output string.
-- **Backend conformance suite** — every workspace backend can be
-  exercised against a shared set of invariants
-  (`workspace::conformance`), validated against both
-  `LocalWorkspaceBackend` and an `InMemoryFileSystem` reference impl.
-
-Full migration notes are in [CHANGELOG.md](./CHANGELOG.md).
+All additions are backward compatible. Earlier highlights — 3.2's subagent task
+tracker and 3.0's cloud-native workspace + typed tool errors — and full
+migration notes live in [CHANGELOG.md](./CHANGELOG.md).
 
 ---
 
@@ -344,9 +334,12 @@ session.tenant_id                       # read back the host-supplied labels
 session.resume_run("run-id-from-elsewhere")  # rehydrate a checkpointed run on this node
 
 # 15. Long-running session ops (cap memory + reap idle resources).
-from a3s_code import SessionRetentionLimits   # FIFO caps on in-memory stores
-limits = SessionRetentionLimits()             # (Rust-only today; Python helper TBD)
-opts.retention_limits = limits                # falls through to AgentConfig
+opts.retention_limits = {                     # FIFO caps on in-memory stores;
+    "max_runs_retained": 100,                 # pass any subset of these keys
+    "max_events_per_run": 5000,
+    "max_trace_events": 5000,
+    "max_terminal_subagent_tasks": 200,
+}
 agent.disconnect_idle_mcp(5 * 60 * 1000)      # drop MCP servers idle > 5min; returns names
 
 # 16. Budget / cost governance (host-supplied policy).
@@ -549,22 +542,29 @@ const resumed2 = await session2.resumeRun('run-id-from-elsewhere');
 // process via session.resumeRun(runId).
 
 // 15. Long-running session ops (cap memory + reap idle resources).
-// SessionRetentionLimits is Rust-only today; an SDK shape lands later.
+// SessionRetentionLimits ships in both SDKs — pass retentionLimits in
+// SessionOptions to FIFO-cap the in-memory stores (any subset of keys):
+//   retentionLimits: { maxRunsRetained, maxEventsPerRun,
+//                      maxTraceEvents, maxTerminalSubagentTasks }
 // MCP idle disconnect is on the agent — call it periodically from a
 // host-side sweeper (e.g. setInterval).
 await agent.disconnectIdleMcp(5 * 60 * 1000);   // drop quiet MCP servers
 
 // 16. Budget / cost governance (host-supplied policy).
+// Each callback takes a single ctx object and must not throw (napi); the
+// bridge fails closed on timeout/unreadable return.
 session2.setBudgetGuard({
-  checkBeforeLlm: (sessionId, estimatedTokens) => {
-    if (overBudget(sessionId)) {
+  checkBeforeLlm: (ctx) => {
+    if (overBudget(ctx.sessionId)) {             // ctx.estimatedTokens also available
       return { decision: 'deny', resource: 'llm_tokens', reason: 'monthly cap' };
     }
     return null;                                 // allow
   },
-  recordAfterLlm: (sessionId, usage) => {
-    track(sessionId, usage.total_tokens);
-  },
+  recordAfterLlm: (ctx) => {                      // usage keys are camelCase:
+    track(ctx.sessionId, ctx.usage.totalTokens); // promptTokens/completionTokens/
+  },                                             // totalTokens/cacheReadTokens/cacheWriteTokens
+  checkBeforeTool: (ctx) => null,                // inspect ctx.toolName
+  timeoutMs: 5000,                               // optional; default 5000
 });
 // SoftLimit emits BudgetThresholdHit('soft'); Deny throws "Budget exhausted".
 ```
