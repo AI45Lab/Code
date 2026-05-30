@@ -1314,7 +1314,7 @@ async fn test_budget_guard_deny_aborts_llm_call() {
 #[test]
 fn test_cluster_agent_events_serialize_with_expected_tags() {
     // Lock the wire schema for cluster-event variants — these are
-    // emitted by the host (书安OS) through HookExecutor and need
+    // emitted by the host through HookExecutor and need
     // stable JSON tags so external producers can target them.
     let budget = AgentEvent::BudgetThresholdHit {
         resource: "llm_tokens".to_string(),
@@ -2245,7 +2245,7 @@ async fn test_completed_run_clears_its_loop_checkpoint() {
 /// resumed run is allocated a **fresh** run id (not the
 /// checkpoint's).
 ///
-/// This exercises the contract surface 书安OS will sit on: write a
+/// This exercises the contract surface the host will sit on: write a
 /// checkpoint on node A, hand the run id to node B which builds a
 /// session against the shared store and calls `resume_run`. Crash
 /// simulation is reduced to a manual checkpoint seed because the

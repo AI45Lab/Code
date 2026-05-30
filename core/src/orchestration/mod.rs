@@ -15,7 +15,7 @@
 //! [`AgentStepSpec`] / [`StepOutcome`]) and ships a default executor that runs
 //! every step locally. The **placement** of those steps across a cluster —
 //! transport, scheduling, where a step actually executes — belongs to the
-//! host (书安OS), which implements [`AgentExecutor`]. The combinators never
+//! host, which implements [`AgentExecutor`]. The combinators never
 //! observe where a step ran, so the same orchestration scales from one process
 //! to a cluster without change.
 //!

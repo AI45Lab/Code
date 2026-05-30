@@ -314,7 +314,7 @@ impl SessionOptions {
     /// Install a host-provided [`HostEnv`](crate::host_env::HostEnv) for
     /// deterministic ID generation and time. Replaces the framework
     /// default of `uuid::Uuid::new_v4()` + wall clock — used by
-    /// 书安OS replay infrastructure to recreate a run bit-identical on
+    /// host replay infrastructure to recreate a run bit-identical on
     /// another node.
     pub fn with_host_env(mut self, env: Arc<crate::host_env::HostEnv>) -> Self {
         self.host_env = Some(env);

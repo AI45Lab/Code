@@ -385,7 +385,7 @@ async fn subagent_tasks_persist_across_save_and_resume() {
 /// IT-5 (Pillar 5): identity labels (tenant / principal / agent template /
 /// correlation id) survive a session save/resume round trip and are
 /// restored verbatim. These are framework-opaque strings that the host
-/// (书安OS) uses for multi-tenancy / accounting / tracing — losing
+/// uses for multi-tenancy / accounting / tracing — losing
 /// them on migration breaks audit trails.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn identity_labels_persist_across_save_and_resume() {
@@ -449,7 +449,7 @@ async fn identity_labels_persist_across_save_and_resume() {
 
 /// IT-CONSOLIDATED (cluster ops): exercise the full cluster-grade
 /// API surface in one realistic two-node lifecycle. This is the
-/// reference flow 书安OS-side scheduling code targets.
+/// reference flow host-side scheduling code targets.
 ///
 /// Two **separate** Agents share one MemorySessionStore (simulating
 /// two cluster nodes mounting the same persistent store):
@@ -460,7 +460,7 @@ async fn identity_labels_persist_across_save_and_resume() {
 ///
 /// The host-supplied identity labels, retention caps, and persisted
 /// subagent task snapshots must all survive the cross-node hop —
-/// these are exactly the invariants 书安OS relies on for billing,
+/// these are exactly the invariants the host relies on for billing,
 /// audit, and memory safety in a long-lived fleet.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cluster_ops_consolidated_session_lifecycle() {
@@ -597,7 +597,7 @@ async fn cluster_ops_consolidated_session_lifecycle() {
     assert_eq!(cp_after.total_usage.total_tokens, 1000);
 
     // Node B can decide to clean up the old run id once it's done with
-    // resumption — the host (书安OS) tracks the old→new run mapping.
+    // resumption — the host tracks the old→new run mapping.
     // The framework does not auto-delete checkpoints; that's the
     // host's call.
 }
@@ -606,7 +606,7 @@ async fn cluster_ops_consolidated_session_lifecycle() {
 /// through to the session's in-memory subagent task tracker so a
 /// long-running session's terminal entries don't accumulate
 /// unboundedly. Verified via the public tracker accessor — same
-/// surface 书安OS would inspect / drive externally.
+/// surface the host would inspect / drive externally.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn retention_limits_are_plumbed_into_subagent_tracker() {
     use a3s_code_core::retention::SessionRetentionLimits;
@@ -660,7 +660,7 @@ async fn retention_limits_are_plumbed_into_subagent_tracker() {
 }
 
 /// IT-6 (Pillar 3 cut 1): a `LoopCheckpoint` round-trips through the
-/// `SessionStore` — this is the data contract 书安OS will sit on to
+/// `SessionStore` — this is the data contract the host will sit on to
 /// migrate / replay a run on another node.
 ///
 /// Cut 1 lands the data + persistence path. The actual in-loop
@@ -774,7 +774,7 @@ async fn send_without_tool_calls_does_not_emit_loop_checkpoint() {
     // assert the *negative* property: with no run yet executed, no
     // checkpoint exists for any run id we choose to query.
     //
-    // This also documents the contract for 书安OS-side tooling: a
+    // This also documents the contract for host-side tooling: a
     // session that hasn't completed a tool round has no checkpoint.
     let probe = store
         .load_loop_checkpoint("any-fake-run-id")
@@ -790,7 +790,7 @@ async fn send_without_tool_calls_does_not_emit_loop_checkpoint() {
 /// IT-8 (Pillar 3 cut 2): `AgentSession::resume_run` fails fast with a
 /// helpful error when there is no checkpoint for the given run id, and
 /// with a different error when no `SessionStore` is configured at all.
-/// These are the error paths 书安OS-side scheduling code needs to
+/// These are the error paths host-side scheduling code needs to
 /// distinguish to decide between "retry later" and "fall back to a
 /// fresh session".
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

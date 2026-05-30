@@ -184,7 +184,7 @@ pub struct SessionData {
     pub parent_id: Option<String>,
 
     /// Multi-tenant identifier. The framework only transports this string;
-    /// the host (e.g. 书安OS) decides what "tenant" means and how to
+    /// the host decides what "tenant" means and how to
     /// aggregate/bill on it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tenant_id: Option<String>,

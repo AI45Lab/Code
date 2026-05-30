@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Programmable, deterministic multi-agent orchestration — a grammar for
 expressing fan-out, pipelines, and resumable workflows in code (not only via
-model-driven delegation), drawn along the framework / host (书安OS) boundary:
+model-driven delegation), drawn along the framework / host boundary:
 the framework owns the grammar + serializable contracts; the host owns
 placement, transport, and scheduling. All additions are backward compatible
 (new types/methods, new optional fields, new `SessionStore` methods with
@@ -80,7 +80,7 @@ default no-op impls).
 
 ## [3.3.0] - 2026-05-29
 
-Cluster-grade runtime: everything needed for a host platform (e.g. 书安OS)
+Cluster-grade runtime: everything needed for a host platform
 to run long-lived agent sessions across many nodes — graceful shutdown,
 multi-tenant identity, cost governance, deterministic replay, crash-tolerant
 runs, and bounded in-memory state — plus an adversarial-review hardening

@@ -576,7 +576,7 @@ session2.setBudgetGuard({
 Beyond *model-driven* delegation (the agent calling `task`/`parallel_task`), a
 session exposes a **deterministic, programmable** orchestration grammar: you
 decide the fan-out, chaining, and resume in code. Steps run through the
-session's `AgentExecutor`; a host (书安OS) can substitute its own executor to
+session's `AgentExecutor`; a host can substitute its own executor to
 place steps across a cluster — the grammar is identical either way.
 
 A **step** is `{ task_id, agent, description, prompt, max_steps?,

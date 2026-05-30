@@ -557,7 +557,7 @@ impl From<StepOutcome> for TaskResult {
 }
 
 /// The local, in-process executor: every step runs as a child `AgentLoop` on
-/// this node's tokio runtime. This is the default; a host (书安OS) substitutes
+/// this node's tokio runtime. This is the default; a host substitutes
 /// its own [`AgentExecutor`] to place steps across a cluster.
 #[async_trait]
 impl AgentExecutor for TaskExecutor {

@@ -121,7 +121,7 @@ impl Clock for SystemClock {
 /// Deterministic ID generator that yields a configured prefix followed
 /// by a monotonic counter (`<prefix>-0`, `<prefix>-1`, …).
 ///
-/// Public so external host crates (e.g. 书安OS replay tooling) can use it
+/// Public so external host crates (e.g. replay tooling) can use it
 /// without re-implementing the pattern.
 #[derive(Debug, Default)]
 pub struct SequentialIdGenerator {

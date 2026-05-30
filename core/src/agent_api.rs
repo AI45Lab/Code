@@ -164,7 +164,7 @@ pub struct SessionOptions {
     /// Explicit session ID (auto-generated if not set)
     pub session_id: Option<String>,
     /// Multi-tenant identifier. Framework only transports this string;
-    /// the host (e.g. 书安OS) decides what "tenant" means and how to
+    /// the host decides what "tenant" means and how to
     /// aggregate/bill on it. Emitted to hooks/traces, persisted in
     /// `SessionData`, never interpreted by core.
     pub tenant_id: Option<String>,
@@ -717,7 +717,7 @@ impl AgentSession {
     /// stored under `checkpoint_run_id` and replays the agent loop from
     /// that boundary state. A **new** run id is allocated for the
     /// resumed work; the relationship between the old and new run is
-    /// host-tracked (e.g. by 书安OS) — the framework does not interpret
+    /// host-tracked — the framework does not interpret
     /// it.
     ///
     /// Returns an error when no `SessionStore` is configured on this

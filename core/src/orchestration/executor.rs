@@ -10,7 +10,7 @@ use tokio::sync::broadcast;
 /// A single unit of orchestrated agent work — *what* to run, independent of
 /// *where* it runs.
 ///
-/// Serializable on purpose: a host (书安OS) may ship it to another node, and
+/// Serializable on purpose: a host may ship it to another node, and
 /// a future workflow checkpoint persists it. The orchestration layer assigns
 /// `task_id`; everything else mirrors a delegated task.
 // `serde_json::Value` (in `output_schema`) is not `Eq`, so this derives
@@ -119,7 +119,7 @@ impl StepOutcome {
 /// and the host's placement / transport / scheduling.
 ///
 /// The in-box [`TaskExecutor`](crate::tools::TaskExecutor) runs every step
-/// locally (in-process, tokio). A host such as 书安OS implements this trait to
+/// locally (in-process, tokio). A host such as a cluster runtime implements this trait to
 /// place steps on remote nodes; the orchestration combinators are written
 /// purely against the trait and never observe where a step actually ran. The
 /// framework deliberately does **not** own placement, transport, or

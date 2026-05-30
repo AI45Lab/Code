@@ -3,7 +3,7 @@
 //! The agent loop persists a [`LoopCheckpoint`] after each completed tool
 //! round. The checkpoint captures the minimum state needed to recreate
 //! the loop's position so a future process — typically on a different
-//! node, dispatched by 书安OS after a crash or planned migration — can
+//! node, dispatched by the host after a crash or planned migration — can
 //! resume from the last consistent boundary.
 //!
 //! Boundary policy: checkpoints are taken **only** between tool rounds,

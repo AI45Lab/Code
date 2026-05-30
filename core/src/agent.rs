@@ -592,7 +592,7 @@ pub enum AgentEvent {
     // ========================================================================
     // Cluster / platform events
     //
-    // These variants are emitted by the host platform (e.g. 书安OS) via
+    // These variants are emitted by the host platform via
     // `HookExecutor` and are not produced by the agent loop itself. They
     // give in-session code a uniform way to observe platform-level
     // decisions (budget exhaustion, scheduled passivation, peer

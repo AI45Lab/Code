@@ -1,7 +1,7 @@
 //! Budget / cost / quota contract for cluster-grade hosts.
 //!
 //! The framework does not enforce budgets itself — it only defines the
-//! decision points and emits structured events. The host (e.g. 书安OS)
+//! decision points and emits structured events. The host
 //! implements [`BudgetGuard`] with whatever backend it likes
 //! (per-tenant counters in Redis, per-day USD caps in Postgres, etc.)
 //! and plugs it into [`SessionOptions::with_budget_guard`].

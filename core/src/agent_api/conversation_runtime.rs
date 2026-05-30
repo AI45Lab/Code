@@ -94,7 +94,7 @@ pub(super) async fn stream(
 /// for `checkpoint_run_id` from the session's `SessionStore` and replays
 /// the agent loop from that boundary state. A **new** run id is
 /// generated for the resumed work — the relationship between the old
-/// and new run is metadata 书安OS tracks externally.
+/// and new run is metadata the host tracks externally.
 ///
 /// Returns an error when the session has no store configured, or when
 /// no checkpoint exists for `checkpoint_run_id`.
