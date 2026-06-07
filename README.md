@@ -618,6 +618,12 @@ results = session.pipeline(
 # Resumable: progress is journaled under a workflow id via the session store,
 # so an interrupted run (or one resumed on another node) skips completed steps.
 outcomes = session.parallel_resumable(specs, "nightly-audit")
+
+# Budgeted fan-out: every child agent feeds ONE shared token ledger; once the
+# cap is hit further child LLM calls are denied (a soft cap). Returns the
+# outcomes plus the ledger snapshot.
+res = session.workflow_parallel(specs, budget_tokens=500_000)
+print(res["budget"]["consumed_tokens"], res["budget"]["limit_tokens"])
 ```
 
 ```javascript
@@ -637,6 +643,10 @@ const results = await session.pipeline(
 );
 
 await session.parallelResumable(specs, "nightly-audit");
+
+// Budgeted fan-out: all child agents share one token ledger (a soft cap).
+const { outcomes: out, budget } = await session.workflowParallel(specs, 500_000);
+console.log(budget.consumedTokens, budget.limitTokens);
 // NOTE: pipeline stage callbacks MUST NOT throw — return null to stop a chain.
 // A throw aborts the process (same constraint as setBudgetGuard). A stage that
 // hangs past timeoutMs (default 30s) fails closed (treated as null).

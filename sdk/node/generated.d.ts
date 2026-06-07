@@ -745,6 +745,52 @@ export interface McpServerStatusEntry {
   toolCount: number
   error?: string
 }
+/** One unit of orchestrated agent work — what to run, independent of where. */
+export interface AgentStepSpecObject {
+  /** Stable id for this step (assigned by the caller). */
+  taskId: string
+  /** Registry key of the agent to run (e.g. "explore", "review"). */
+  agent: string
+  /** Short label for display/tracking. */
+  description: string
+  /** Instruction handed to the child agent. */
+  prompt: string
+  /** Optional per-step tool-round cap. */
+  maxSteps?: number
+  /** Optional parent session id for event correlation. */
+  parentSessionId?: string
+  /**
+   * When set, the step must return JSON conforming to this schema; the
+   * validated object lands in `StepOutcomeObject.structured`.
+   */
+  outputSchema?: any
+}
+/** The result of running one orchestrated step. */
+export interface StepOutcomeObject {
+  taskId: string
+  sessionId: string
+  agent: string
+  output: string
+  success: boolean
+  /** Schema-validated structured output, when the step requested one. */
+  structured?: any
+}
+/**
+ * A snapshot of a workflow's shared token ledger. `consumedTokens` is the total
+ * recorded across every step; `limitTokens` is the hard ceiling, if one was set.
+ */
+export interface WorkflowBudgetObject {
+  consumedTokens: number
+  limitTokens?: number
+}
+/**
+ * The result of a budgeted workflow fan-out: the per-step outcomes plus the
+ * shared budget ledger snapshot.
+ */
+export interface WorkflowParallelResult {
+  outcomes: Array<StepOutcomeObject>
+  budget: WorkflowBudgetObject
+}
 /**
  * Shape of the JS handlers object accepted by `session.setBudgetGuard`.
  * Each field is optional — methods that aren't provided fall back to
@@ -1213,6 +1259,53 @@ export declare class Session {
    * when no checkpoint exists for `checkpointRunId`.
    */
   resumeRun(checkpointRunId: string): Promise<AgentResult>
+  /**
+   * Run `specs` as a fan-out of agent steps, bounded by the session's
+   * configured parallelism, and resolve with each step's outcome in input
+   * order. A failed step surfaces as `success: false` without failing the
+   * batch.
+   */
+  parallel(specs: Array<AgentStepSpecObject>): Promise<Array<StepOutcomeObject>>
+  /**
+   * Like `parallel`, but resumable: progress is journaled under
+   * `workflowId` via the session's `sessionStore`, so an interrupted run
+   * skips already-completed steps. Rejects when no `sessionStore` is
+   * configured.
+   */
+  parallelResumable(specs: Array<AgentStepSpecObject>, workflowId: string): Promise<Array<StepOutcomeObject>>
+  /**
+   * Run `specs` as a fan-out under one shared workflow token budget.
+   *
+   * Every child agent feeds a single ledger; once `budgetTokens` is reached,
+   * further child LLM calls are denied (a *soft* cap — a wide fan-out can race
+   * a few in-flight turns past it before the post-call ledger catches up; the
+   * in-flight fan-out is never force-killed). Omit `budgetTokens` for an
+   * uncapped ledger that still aggregates spend. Resolves with the outcomes
+   * (input order; a failed step is `success: false`) and the ledger snapshot.
+   */
+  workflowParallel(specs: Array<AgentStepSpecObject>, budgetTokens?: number | undefined | null): Promise<WorkflowParallelResult>
+  /**
+   * Run each item through a chain of `stages`, with no barrier between
+   * stages — item A can be in stage 3 while item B is still in stage 1.
+   *
+   * Each stage is a function `(ctx) => spec | null` where `ctx` is
+   * `{ previous: StepOutcomeObject | null, item: any }`. Return an
+   * `AgentStepSpecObject` (camelCase keys) to run that step, or `null` to
+   * stop the item's chain. A chain also stops when a step fails.
+   *
+   * IMPORTANT: a stage callback MUST NOT throw — in this napi version a JS
+   * throw at return-conversion aborts the process (same constraint as
+   * `setBudgetGuard`). Wrap your logic in try/catch and return `null` on
+   * error. A stage that hangs past `timeoutMs` (default 30s) fails closed
+   * (treated as `null`, stopping that chain) rather than blocking forever.
+   *
+   * This is a *synchronous* napi method that returns a Promise via a
+   * deferred: the JS stage functions (which are not `Send`) are converted
+   * to thread-safe functions on the JS thread here, then the chains run on
+   * the worker runtime and resolve the Promise — so the event loop is never
+   * blocked and no non-`Send` value crosses the async boundary.
+   */
+  pipeline(items: Array<any>, stages: Array<(ctx: { previous: StepOutcomeObject | null, item: any }) => AgentStepSpecObject | null>, timeoutMs?: number): Promise<Array<StepOutcomeObject | null>>
   /**
    * Send a prompt or request and get a streaming event iterator.
    *
