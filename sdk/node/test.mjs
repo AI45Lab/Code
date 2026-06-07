@@ -117,6 +117,18 @@ assert.match(result.text, /tools=\d+$/, 'custom slash command should receive too
   assert.equal(cancelled, false, 'cancelling an unknown subagent task id should resolve to false')
 }
 
+// --- Workflow facade: budgeted fan-out (offline shape check, no LLM) ---
+{
+  assert.equal(typeof session.workflowParallel, 'function', 'workflowParallel should be exposed')
+  // An empty fan-out takes no LLM path: outcomes empty, ledger snapshot present.
+  const capped = await session.workflowParallel([], 50000)
+  assert.deepEqual(capped.outcomes, [], 'empty specs -> empty outcomes')
+  assert.equal(capped.budget.consumedTokens, 0, 'no spend yet')
+  assert.equal(capped.budget.limitTokens, 50000, 'limit reflected in the ledger snapshot')
+  const uncapped = await session.workflowParallel([])
+  assert.ok(uncapped.budget.limitTokens == null, 'uncapped -> no limit (null/undefined)')
+}
+
 session.close()
 
 console.log('node sdk integration ok')
