@@ -1264,8 +1264,16 @@ export declare class Session {
    * configured parallelism, and resolve with each step's outcome in input
    * order. A failed step surfaces as `success: false` without failing the
    * batch.
+   *
+   * Pass `budgetTokens` to run the fan-out under one shared token budget:
+   * every child agent feeds a single ledger and, once the cap is reached,
+   * further child LLM calls are denied (a *soft* cap — a wide fan-out can race
+   * a few in-flight turns past it before the post-call ledger catches up; the
+   * in-flight fan-out is never force-killed). With a budget the result is
+   * `{ outcomes, budget }` (the ledger snapshot); without one it is the plain
+   * outcomes array, unchanged.
    */
-  parallel(specs: Array<AgentStepSpecObject>): Promise<Array<StepOutcomeObject>>
+  parallel(specs: Array<AgentStepSpecObject>, budgetTokens?: number | undefined | null): Promise<Array<StepOutcomeObject> | WorkflowParallelResult>
   /**
    * Like `parallel`, but resumable: progress is journaled under
    * `workflowId` via the session's `sessionStore`, so an interrupted run
@@ -1273,17 +1281,6 @@ export declare class Session {
    * configured.
    */
   parallelResumable(specs: Array<AgentStepSpecObject>, workflowId: string): Promise<Array<StepOutcomeObject>>
-  /**
-   * Run `specs` as a fan-out under one shared workflow token budget.
-   *
-   * Every child agent feeds a single ledger; once `budgetTokens` is reached,
-   * further child LLM calls are denied (a *soft* cap — a wide fan-out can race
-   * a few in-flight turns past it before the post-call ledger catches up; the
-   * in-flight fan-out is never force-killed). Omit `budgetTokens` for an
-   * uncapped ledger that still aggregates spend. Resolves with the outcomes
-   * (input order; a failed step is `success: false`) and the ledger snapshot.
-   */
-  workflowParallel(specs: Array<AgentStepSpecObject>, budgetTokens?: number | undefined | null): Promise<WorkflowParallelResult>
   /**
    * Run each item through a chain of `stages`, with no barrier between
    * stages — item A can be in stage 3 while item B is still in stage 1.

@@ -1406,19 +1406,69 @@ impl PySession {
     /// `task_id`, `agent`, `description`, `prompt`, optional `max_steps`,
     /// `parent_session_id`, `output_schema`. A failed step surfaces as
     /// `success: False` without failing the batch.
-    fn parallel(&self, py: Python<'_>, specs: Vec<Bound<'_, PyAny>>) -> PyResult<Vec<PyObject>> {
+    ///
+    /// Pass `budget_tokens` to run the fan-out under one shared token budget:
+    /// every child agent feeds a single ledger and, once the cap is reached,
+    /// further child LLM calls are denied (a soft cap; the in-flight fan-out is
+    /// never force-killed). With a budget the result is a dict
+    /// `{"outcomes": [...], "budget": {"consumed_tokens", "limit_tokens"}}`;
+    /// without one it is the plain list of outcome dicts, unchanged.
+    #[pyo3(signature = (specs, budget_tokens=None))]
+    fn parallel(
+        &self,
+        py: Python<'_>,
+        specs: Vec<Bound<'_, PyAny>>,
+        budget_tokens: Option<u64>,
+    ) -> PyResult<PyObject> {
         let rust_specs = specs
             .iter()
             .map(|s| py_to_step_spec(py, s))
             .collect::<PyResult<Vec<_>>>()?;
         let session = self.inner.clone();
-        let outcomes = py.allow_threads(move || {
+
+        // No budget → unchanged behavior: a plain list of outcome dicts.
+        let Some(limit) = budget_tokens else {
+            let outcomes = py.allow_threads(move || {
+                get_runtime().block_on(async move {
+                    let executor = session.agent_executor();
+                    execute_steps_parallel(executor, rust_specs, None).await
+                })
+            });
+            let items = outcomes
+                .iter()
+                .map(|o| step_outcome_to_py(py, o))
+                .collect::<PyResult<Vec<_>>>()?;
+            return Ok(PyList::new(py, items)?.into_any().unbind());
+        };
+
+        // Budget → shared ledger across the fan-out; return {"outcomes", "budget"}.
+        let (outcomes, snapshot) = py.allow_threads(move || {
             get_runtime().block_on(async move {
-                let executor = session.agent_executor();
-                execute_steps_parallel(executor, rust_specs, None).await
+                let wf = session.workflow_with_token_budget(Some(limit));
+                let outcomes = wf.parallel(rust_specs).await;
+                (outcomes, wf.budget_snapshot())
             })
         });
-        outcomes.iter().map(|o| step_outcome_to_py(py, o)).collect()
+        let outcomes_py = outcomes
+            .iter()
+            .map(|o| step_outcome_to_py(py, o))
+            .collect::<PyResult<Vec<_>>>()?;
+        let budget = PyDict::new(py);
+        budget.set_item(
+            "consumed_tokens",
+            snapshot.as_ref().map(|b| b.consumed_tokens).unwrap_or(0),
+        )?;
+        budget.set_item(
+            "limit_tokens",
+            snapshot
+                .as_ref()
+                .and_then(|b| b.limit_tokens)
+                .or(Some(limit)),
+        )?;
+        let result = PyDict::new(py);
+        result.set_item("outcomes", outcomes_py)?;
+        result.set_item("budget", budget)?;
+        Ok(result.into_any().unbind())
     }
 
     /// Like `parallel`, but resumable: progress is journaled under
@@ -1454,56 +1504,6 @@ impl PySession {
             })
             .map_err(PyRuntimeError::new_err)?;
         outcomes.iter().map(|o| step_outcome_to_py(py, o)).collect()
-    }
-
-    /// Run `specs` as a fan-out under one shared workflow token budget.
-    ///
-    /// All child agents feed a single ledger; once `budget_tokens` is reached,
-    /// further child LLM calls are denied (a *soft* cap — a wide fan-out can race
-    /// a few in-flight turns past it before the post-call ledger catches up; the
-    /// in-flight fan-out is never force-killed). Pass `budget_tokens=None` for an
-    /// uncapped ledger that still aggregates spend. Returns a dict
-    /// `{"outcomes": [...], "budget": {"consumed_tokens", "limit_tokens"}}`.
-    #[pyo3(signature = (specs, budget_tokens=None))]
-    fn workflow_parallel(
-        &self,
-        py: Python<'_>,
-        specs: Vec<Bound<'_, PyAny>>,
-        budget_tokens: Option<u64>,
-    ) -> PyResult<PyObject> {
-        let rust_specs = specs
-            .iter()
-            .map(|s| py_to_step_spec(py, s))
-            .collect::<PyResult<Vec<_>>>()?;
-        let session = self.inner.clone();
-        let (outcomes, snapshot) = py.allow_threads(move || {
-            get_runtime().block_on(async move {
-                let wf = session.workflow_with_token_budget(budget_tokens);
-                let outcomes = wf.parallel(rust_specs).await;
-                (outcomes, wf.budget_snapshot())
-            })
-        });
-
-        let outcomes_py = outcomes
-            .iter()
-            .map(|o| step_outcome_to_py(py, o))
-            .collect::<PyResult<Vec<_>>>()?;
-        let budget = PyDict::new(py);
-        budget.set_item(
-            "consumed_tokens",
-            snapshot.as_ref().map(|b| b.consumed_tokens).unwrap_or(0),
-        )?;
-        budget.set_item(
-            "limit_tokens",
-            snapshot
-                .as_ref()
-                .and_then(|b| b.limit_tokens)
-                .or(budget_tokens),
-        )?;
-        let result = PyDict::new(py);
-        result.set_item("outcomes", outcomes_py)?;
-        result.set_item("budget", budget)?;
-        Ok(result.into_any().unbind())
     }
 
     /// Run each item through a chain of `stages`, with no barrier between
