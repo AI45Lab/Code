@@ -33,6 +33,29 @@ Intent -> Context -> Action -> Observation -> Verification -> Compaction
 
 Everything else is an extension of that loop.
 
+### What's new in 3.5
+
+- **Programmable Workflow facade** — `AgentSession::workflow()` returns a
+  cheaply-clonable `Workflow` that pre-wires the session's executor (inheriting
+  the same governance as model-driven delegation), persistence store, per-step
+  event stream, and a session-derived stable root id. Its verbs `agent` /
+  `parallel` / `phase` / `pipeline` each delegate to one combinator; `phase` is a
+  named resume boundary that emits `WorkflowEvent` milestones. Control flow lives
+  in the host language — `await` a verb, inspect the outcomes, decide what runs
+  next. See [Programmable Orchestration](#programmable-orchestration) below.
+- **`execute_loop` + `LoopDecision`** — a bounded loop-until-dry combinator with
+  a **mandatory `max_iterations` hard cap**, so an LLM-driven loop can never run
+  away (the predicate is the soft condition; the cap is the hard one).
+- **Shared `WorkflowBudget`** — aggregates token spend from every step into one
+  shared ledger (a soft, workflow-wide cost cap) installed through the existing
+  `BudgetGuard` seam. From the SDK it rides in as an optional argument on
+  `parallel`: `session.parallel(specs, budgetTokens?)` returns `{ outcomes,
+  budget }` (Node) / a dict (Python); without a budget it returns the plain
+  outcomes array, unchanged.
+- **Safety fix** — the parallel write fast path now passes the full
+  `ToolSafetyGate` (permission policy + skill restrictions), closing a bypass
+  where batched writes in one turn could run ungated.
+
 ### What's new in 3.4
 
 - **Programmable orchestration** — a deterministic, code-expressed
@@ -48,16 +71,6 @@ Everything else is an extension of that loop.
   `session.parallel` / `pipeline` / `parallelResumable` (Node) and
   `parallel` / `pipeline` / `parallel_resumable` (Python). See
   [Programmable Orchestration](#programmable-orchestration) below.
-- **Workflow facade, loop & shared budget** — `AgentSession::workflow()` returns
-  a cheaply-clonable `Workflow` that pre-wires the session's executor (inheriting
-  the same governance as model-driven delegation), persistence store, per-step
-  event stream, and a session-derived stable root id. Its verbs `agent` /
-  `parallel` / `phase` / `pipeline` each delegate to one combinator; `phase` is a
-  named resume boundary that emits `WorkflowEvent` milestones. `execute_loop` /
-  `LoopDecision` add a bounded loop-until-dry (with a mandatory `max_iterations`
-  guard). `WorkflowBudget` aggregates token spend from every step into one shared
-  ledger — a soft, workflow-wide cost cap installed through the existing
-  `BudgetGuard` seam.
 
 ### What's new in 3.3
 
