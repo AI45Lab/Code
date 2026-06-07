@@ -31,7 +31,7 @@ from typing import Optional
 
 # Version is the bootstrap's own version, which equals the matching native
 # wheel version on GH Releases. Bumped by the release workflow.
-__version__ = "3.4.0"
+__version__ = "3.5.0"
 
 _DEFAULT_BASE_URL = "https://github.com/AI45Lab/Code/releases/download"
 _REQUEST_TIMEOUT_S = 120
