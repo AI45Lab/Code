@@ -6,7 +6,7 @@
 //! of stages independently — no barrier between stages.
 
 use super::checkpoint::WorkflowCheckpoint;
-use super::executor::{AgentExecutor, AgentStepSpec, StepOutcome};
+use super::executor::{execute_steps_parallel, AgentExecutor, AgentStepSpec, StepOutcome};
 use crate::agent::AgentEvent;
 use crate::ordered_parallel::run_ordered_parallel_with_limit;
 use crate::store::SessionStore;
@@ -212,6 +212,63 @@ pub async fn execute_steps_parallel_resumable(
         let _ = store.delete_workflow_checkpoint(workflow_id).await;
     }
     merged
+}
+
+/// What an [`execute_loop`] predicate decides after seeing a round's outcomes.
+pub enum LoopDecision {
+    /// Run another round with these specs.
+    Continue(Vec<AgentStepSpec>),
+    /// Stop now; the loop returns the round that just completed.
+    Stop,
+}
+
+/// Run rounds until the predicate says [`Stop`](LoopDecision::Stop), a round is
+/// asked to run no specs, or `max_iterations` is reached — whichever comes
+/// first. Each round is a barrier ([`execute_steps_parallel`]); `next` receives
+/// the just-completed round's outcomes and decides whether (and with what) to
+/// continue. Returns the last round's outcomes (empty if `initial` was empty).
+///
+/// `max_iterations` is **mandatory and a hard cap**: it is clamped to at least
+/// 1, and once reached the loop stops even if the predicate returns
+/// [`Continue`](LoopDecision::Continue). This is the guard that makes an
+/// LLM-driven, unknown-length loop (e.g. loop-until-dry) safe — the predicate
+/// must never be the *only* termination condition.
+///
+/// This is the "loop" shape from the orchestration grammar; like the other
+/// combinators it is written purely against the [`AgentExecutor`] seam and adds
+/// no scheduling of its own.
+pub async fn execute_loop<F>(
+    executor: Arc<dyn AgentExecutor>,
+    initial: Vec<AgentStepSpec>,
+    max_iterations: usize,
+    event_tx: Option<broadcast::Sender<AgentEvent>>,
+    mut next: F,
+) -> Vec<StepOutcome>
+where
+    F: FnMut(&[StepOutcome]) -> LoopDecision + Send,
+{
+    let cap = max_iterations.max(1);
+    let mut specs = initial;
+    let mut last = Vec::new();
+    let mut iterations = 0;
+
+    while !specs.is_empty() {
+        let round = execute_steps_parallel(
+            Arc::clone(&executor),
+            std::mem::take(&mut specs),
+            event_tx.clone(),
+        )
+        .await;
+        iterations += 1;
+        let decision = next(&round);
+        last = round;
+        match decision {
+            LoopDecision::Continue(more) if iterations < cap => specs = more,
+            _ => break,
+        }
+    }
+
+    last
 }
 
 #[cfg(test)]
@@ -663,5 +720,90 @@ mod tests {
         assert_eq!(out[0].output, "cached-b");
         assert_eq!(out[1].task_id, "c");
         assert!(out.iter().all(|o| o.success));
+    }
+
+    #[tokio::test]
+    async fn loop_stops_when_predicate_says_stop() {
+        let exec: Arc<dyn AgentExecutor> = Arc::new(EchoExecutor::new());
+        let mut rounds = 0;
+        let out = crate::orchestration::execute_loop(
+            exec,
+            vec![AgentStepSpec::new("r0", "explore", "d", "p")],
+            10,
+            None,
+            |outcomes| {
+                rounds += 1;
+                // Continue twice, then stop on the third round.
+                if rounds < 3 {
+                    LoopDecision::Continue(vec![AgentStepSpec::new(
+                        format!("r{rounds}"),
+                        "explore",
+                        "d",
+                        outcomes[0].output.clone(),
+                    )])
+                } else {
+                    LoopDecision::Stop
+                }
+            },
+        )
+        .await;
+        assert_eq!(rounds, 3, "predicate saw exactly three rounds");
+        assert_eq!(out.len(), 1, "returns the last round's outcomes");
+        assert!(out[0].success);
+    }
+
+    #[tokio::test]
+    async fn loop_is_hard_capped_by_max_iterations() {
+        let exec: Arc<dyn AgentExecutor> = Arc::new(EchoExecutor::new());
+        let mut rounds = 0;
+        // A predicate that NEVER stops — only max_iterations terminates it.
+        let _ = crate::orchestration::execute_loop(
+            exec,
+            vec![AgentStepSpec::new("r", "explore", "d", "p")],
+            3,
+            None,
+            |_outcomes| {
+                rounds += 1;
+                LoopDecision::Continue(vec![AgentStepSpec::new("r", "explore", "d", "p")])
+            },
+        )
+        .await;
+        assert_eq!(
+            rounds, 3,
+            "max_iterations is a hard cap on a never-stopping predicate"
+        );
+    }
+
+    #[tokio::test]
+    async fn loop_with_empty_initial_runs_nothing() {
+        let exec: Arc<dyn AgentExecutor> = Arc::new(EchoExecutor::new());
+        let mut called = false;
+        let out = crate::orchestration::execute_loop(exec, vec![], 5, None, |_| {
+            called = true;
+            LoopDecision::Stop
+        })
+        .await;
+        assert!(out.is_empty());
+        assert!(!called, "predicate is not invoked when there is no work");
+    }
+
+    #[tokio::test]
+    async fn loop_stops_when_predicate_requests_no_further_specs() {
+        // Continue with an empty spec set ends the loop (no work left = dry).
+        let exec: Arc<dyn AgentExecutor> = Arc::new(EchoExecutor::new());
+        let mut rounds = 0;
+        let out = crate::orchestration::execute_loop(
+            exec,
+            vec![AgentStepSpec::new("r0", "explore", "d", "p")],
+            10,
+            None,
+            |_| {
+                rounds += 1;
+                LoopDecision::Continue(vec![]) // nothing more to do → loop ends
+            },
+        )
+        .await;
+        assert_eq!(rounds, 1);
+        assert_eq!(out.len(), 1, "the completed round is still returned");
     }
 }

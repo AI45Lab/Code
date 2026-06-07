@@ -48,6 +48,16 @@ Everything else is an extension of that loop.
   `session.parallel` / `pipeline` / `parallelResumable` (Node) and
   `parallel` / `pipeline` / `parallel_resumable` (Python). See
   [Programmable Orchestration](#programmable-orchestration) below.
+- **Workflow facade, loop & shared budget** — `AgentSession::workflow()` returns
+  a cheaply-clonable `Workflow` that pre-wires the session's executor (inheriting
+  the same governance as model-driven delegation), persistence store, per-step
+  event stream, and a session-derived stable root id. Its verbs `agent` /
+  `parallel` / `phase` / `pipeline` each delegate to one combinator; `phase` is a
+  named resume boundary that emits `WorkflowEvent` milestones. `execute_loop` /
+  `LoopDecision` add a bounded loop-until-dry (with a mandatory `max_iterations`
+  guard). `WorkflowBudget` aggregates token spend from every step into one shared
+  ledger — a soft, workflow-wide cost cap installed through the existing
+  `BudgetGuard` seam.
 
 ### What's new in 3.3
 
@@ -631,6 +641,50 @@ await session.parallelResumable(specs, "nightly-audit");
 // A throw aborts the process (same constraint as setBudgetGuard). A stage that
 // hangs past timeoutMs (default 30s) fails closed (treated as null).
 ```
+
+### The `Workflow` facade (Rust)
+
+`AgentSession::workflow()` returns a cheaply-clonable `Workflow` that bundles the
+session's executor, persistence store, per-step event stream, and a stable,
+session-derived root id. Control flow is ordinary Rust — `await` a verb, inspect
+the outcomes, decide what runs next:
+
+```rust
+let wf = session.workflow(); // or session.workflow_with_token_budget(Some(500_000))
+
+// One step, then a *variable* fan-out computed from its result (the "dynamic"
+// part: the shape is decided at runtime, not declared up front).
+let plan = wf.agent(AgentStepSpec::new("plan", "plan", "plan", goal)).await;
+let specs: Vec<AgentStepSpec> = plan.output.lines().enumerate()
+    .map(|(i, line)| AgentStepSpec::new(format!("impl-{i}"), "general", "impl", line))
+    .collect();
+
+// `phase` is a NAMED barrier and a resume boundary: with a store it journals
+// progress under "{root_id}/{index}:{name}" and emits PhaseStart/PhaseEnd on the
+// WorkflowEvent stream (subscribe via `wf.subscribe()`).
+let done = wf.phase("implement", specs).await;
+let reviews = wf.phase("review", to_review(&done)).await; // budget shared across all phases
+```
+
+- **Verbs** — `agent` (one step), `parallel` (barrier fan-out), `phase` (named,
+  resumable barrier + milestones), `pipeline` (per-item staged chains), and the
+  non-failing `log`. Each delegates to exactly one combinator; the facade owns no
+  scheduling.
+- **Loop** — `execute_loop(executor, initial, max_iterations, tx, |round| …)`
+  returns `LoopDecision::{Continue(specs), Stop}` and runs rounds until the
+  predicate stops, a round has no work (dry), or `max_iterations` (a **mandatory
+  hard cap**) is hit — the guard that makes an LLM-driven loop safe.
+- **Budget** — `workflow_with_token_budget(Some(limit))` installs a
+  `WorkflowBudget` as every child run's `budget_guard`, so per-turn LLM
+  accounting feeds **one** shared ledger; `wf.budget_snapshot()` reads it and a
+  `WorkflowEvent::BudgetExhausted` fires once the cap is reached. It is a *soft*
+  ceiling: a wide fan-out can race a few in-flight turns past the cap before the
+  post-call ledger catches up (the framework never force-kills a running
+  fan-out).
+- **Safety** — every step runs through the same `AgentExecutor` seam as
+  model-driven delegation, so child runs inherit the session's `SecurityProvider`,
+  skill restrictions, confirmation, and workspace — orchestrated steps are
+  neither more nor less privileged than delegated ones.
 
 ---
 

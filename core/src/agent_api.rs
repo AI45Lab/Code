@@ -932,15 +932,101 @@ impl AgentSession {
     /// run against; a host can instead supply its own executor to place steps
     /// across a cluster.
     pub fn agent_executor(&self) -> Arc<dyn crate::orchestration::AgentExecutor> {
-        let executor = crate::tools::TaskExecutor::with_mcp(
+        Arc::new(self.build_task_executor(self.parent_run_context()))
+    }
+
+    /// Build the in-box [`TaskExecutor`](crate::tools::TaskExecutor) for this
+    /// session, applying `parent` as the child-run capability context. Shared by
+    /// [`agent_executor`](Self::agent_executor) and [`workflow`](Self::workflow)
+    /// so both wire children identically.
+    fn build_task_executor(
+        &self,
+        parent: crate::child_run::ChildRunContext,
+    ) -> crate::tools::TaskExecutor {
+        crate::tools::TaskExecutor::with_mcp(
             Arc::clone(&self.agent_registry),
             Arc::clone(&self.llm_client),
             self.workspace.display().to_string(),
             Arc::clone(&self.mcp_manager),
         )
+        .with_parent_context(parent)
         .with_subagent_tracker(Arc::clone(&self.subagent_tasks))
-        .with_max_parallel_tasks(self.config.max_parallel_tasks);
-        Arc::new(executor)
+        .with_max_parallel_tasks(self.config.max_parallel_tasks)
+    }
+
+    /// A programmable [`Workflow`](crate::orchestration::Workflow) bound to this
+    /// session.
+    ///
+    /// Pre-wired with this session's executor (inheriting the same governance as
+    /// model-driven delegation), persistence store (so each
+    /// [`phase`](crate::orchestration::Workflow::phase) is a resume boundary),
+    /// per-step event stream, and a session-derived stable root id. Control flow
+    /// is ordinary Rust: `await` a verb, inspect the outcomes, decide what runs
+    /// next.
+    pub fn workflow(&self) -> crate::orchestration::Workflow {
+        self.workflow_with_token_budget(None)
+    }
+
+    /// Like [`workflow`](Self::workflow) but with a hard token ceiling shared
+    /// across every step. The cap is a best-effort *soft* cost ceiling — under a
+    /// wide fan-out a few in-flight turns can race past it before the shared
+    /// ledger catches up (see [`WorkflowBudget`](crate::orchestration::WorkflowBudget)).
+    pub fn workflow_with_token_budget(
+        &self,
+        limit_tokens: Option<u64>,
+    ) -> crate::orchestration::Workflow {
+        use crate::budget::BudgetGuard;
+
+        // One shared ledger for the whole workflow, wrapping the session's own
+        // budget guard (if any) so a host's per-tenant accounting keeps working.
+        let mut budget = crate::orchestration::WorkflowBudget::new(limit_tokens);
+        if let Some(inner) = self.config.budget_guard.clone() {
+            budget = budget.with_inner(inner);
+        }
+        let budget = Arc::new(budget);
+
+        // Install the shared ledger as the child runs' budget guard so every
+        // step's per-turn LLM accounting feeds it.
+        let mut parent = self.parent_run_context();
+        parent.budget_guard = Some(Arc::clone(&budget) as Arc<dyn BudgetGuard>);
+        let executor: Arc<dyn crate::orchestration::AgentExecutor> =
+            Arc::new(self.build_task_executor(parent));
+
+        let mut builder = crate::orchestration::Workflow::builder(executor)
+            .with_root_id(format!("wf-{}", self.session_id))
+            .with_budget(Arc::clone(&budget));
+        if let Some(store) = self.session_store.clone() {
+            builder = builder.with_store(store);
+        }
+        if let Some(step_events) = self.tool_context.agent_event_tx.clone() {
+            builder = builder.with_step_events(step_events);
+        }
+        builder.build()
+    }
+
+    /// Build the [`ChildRunContext`](crate::child_run::ChildRunContext) that
+    /// orchestrated / delegated child runs inherit from this session.
+    ///
+    /// Mirrors the context the model-driven `task` / `parallel_task` path
+    /// installs (see `register_task_capability` in `agent_api/capabilities.rs`)
+    /// so a step run through [`agent_executor`](Self::agent_executor) carries the
+    /// SAME governance — security provider, skill restrictions, confirmation,
+    /// the shared workspace, and the safety limits — instead of weaker, ambient
+    /// authority. Sourced from the session's resolved config; `hook_engine`
+    /// stays `None` to match the model-driven path.
+    pub(crate) fn parent_run_context(&self) -> crate::child_run::ChildRunContext {
+        crate::child_run::ChildRunContext {
+            security_provider: self.config.security_provider.clone(),
+            hook_engine: None,
+            skill_registry: self.config.skill_registry.clone(),
+            tool_timeout_ms: self.config.tool_timeout_ms,
+            max_parallel_tasks: Some(self.config.max_parallel_tasks),
+            max_execution_time_ms: self.config.max_execution_time_ms,
+            circuit_breaker_threshold: Some(self.config.circuit_breaker_threshold),
+            confirmation_manager: self.config.confirmation_manager.clone(),
+            workspace_services: Some(Arc::clone(&self.tool_context.workspace_services)),
+            budget_guard: self.config.budget_guard.clone(),
+        }
     }
 
     /// The session's persistence store, if one is configured — needed by the

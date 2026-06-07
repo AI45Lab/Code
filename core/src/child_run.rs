@@ -17,6 +17,7 @@
 //! | circuit_breaker_threshold | Yes     | LLM failure handling should be consistent      |
 //! | confirmation_manager    | Depends   | Governed by ConfirmationInheritance            |
 //! | workspace_services      | Yes       | Child tools must operate on the same workspace |
+//! | budget_guard            | Yes       | One shared cost ledger spans the whole fan-out |
 //! | memory                  | No        | Child has isolated context                     |
 //! | queue_config            | No        | Child runs are synchronous within parent       |
 //! | planning_mode           | No        | Child tasks are pre-planned by parent          |
@@ -43,6 +44,10 @@ pub struct ChildRunContext {
     pub circuit_breaker_threshold: Option<u32>,
     pub confirmation_manager: Option<Arc<dyn ConfirmationProvider>>,
     pub workspace_services: Option<Arc<crate::workspace::WorkspaceServices>>,
+    /// Shared budget/quota guard. When inherited, every child run feeds the same
+    /// guard, so a single ledger can cap an entire delegated fan-out / workflow
+    /// rather than each child counting independently.
+    pub budget_guard: Option<Arc<dyn crate::budget::BudgetGuard>>,
 }
 
 impl ChildRunContext {
@@ -74,6 +79,9 @@ impl ChildRunContext {
         }
         if config.confirmation_manager.is_none() {
             config.confirmation_manager = self.confirmation_manager.clone();
+        }
+        if config.budget_guard.is_none() {
+            config.budget_guard = self.budget_guard.clone();
         }
     }
 }

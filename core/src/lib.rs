@@ -136,9 +136,10 @@ pub use llm::{
     Message, OpenAiClient, TokenUsage,
 };
 pub use orchestration::{
-    execute_pipeline, execute_steps_parallel, execute_steps_parallel_resumable, AgentExecutor,
-    AgentStepSpec, PipelineStage, StepOutcome, WorkflowCheckpoint, WorkflowStepRecord,
-    WORKFLOW_CHECKPOINT_SCHEMA_VERSION,
+    execute_loop, execute_pipeline, execute_steps_parallel, execute_steps_parallel_resumable,
+    AgentExecutor, AgentStepSpec, BudgetSnapshot, LoopDecision, PipelineStage, StepOutcome,
+    Workflow, WorkflowBudget, WorkflowBuilder, WorkflowCheckpoint, WorkflowEvent,
+    WorkflowStepRecord, WORKFLOW_CHECKPOINT_SCHEMA_VERSION,
 };
 pub use prompts::{AgentStyle, DetectionConfidence, PlanningMode, SystemPromptSlots};
 pub use run::{

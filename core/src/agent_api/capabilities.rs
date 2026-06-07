@@ -188,6 +188,7 @@ fn register_task_capability(
         circuit_breaker_threshold: opts.circuit_breaker_threshold,
         confirmation_manager: opts.confirmation_manager.clone(),
         workspace_services: opts.workspace_services.clone(),
+        budget_guard: opts.budget_guard.clone(),
     };
 
     let registry = Arc::new(registry);

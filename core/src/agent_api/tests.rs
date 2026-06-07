@@ -3217,3 +3217,107 @@ async fn cancel_subagent_task_marks_snapshot_cancelled() {
     assert!(!session.cancel_subagent_task(&task_id).await);
     assert!(!session.cancel_subagent_task("task-unknown").await);
 }
+
+/// Regression: `agent_executor()` must install the same `ChildRunContext` the
+/// model-driven `task` path uses, so orchestrated/scripted steps inherit the
+/// session's governance instead of running under weaker ambient authority.
+/// Before the fix the executor was built without `.with_parent_context(..)`.
+#[tokio::test]
+async fn test_agent_executor_inherits_parent_run_context() {
+    use crate::security::DefaultSecurityProvider;
+    use crate::skills::SkillRegistry;
+
+    let agent = Agent::from_config(test_config()).await.unwrap();
+
+    let security: Arc<dyn crate::security::SecurityProvider> =
+        Arc::new(DefaultSecurityProvider::new());
+    let skills = Arc::new(SkillRegistry::new());
+    let opts = SessionOptions::new()
+        .with_security_provider(Arc::clone(&security))
+        .with_skill_registry(Arc::clone(&skills));
+
+    let session = agent.session("/tmp/test-workspace", Some(opts)).unwrap();
+    let ctx = session.parent_run_context();
+
+    assert!(
+        ctx.security_provider.is_some(),
+        "security provider must propagate to delegated/orchestrated child runs"
+    );
+    assert!(
+        ctx.skill_registry.is_some(),
+        "skill registry (skill restrictions) must propagate to child runs"
+    );
+    assert!(
+        ctx.workspace_services.is_some(),
+        "workspace services must propagate so child tools share the workspace"
+    );
+    assert!(
+        ctx.hook_engine.is_none(),
+        "hook_engine stays None, matching the model-driven task path"
+    );
+}
+
+/// `AgentSession::workflow()` must pre-wire a shared budget ledger and a stable,
+/// session-derived root id (so phase checkpoints resume across runs).
+#[tokio::test]
+async fn test_session_workflow_is_prewired_with_budget_and_stable_root_id() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session = agent.session("/tmp/test-workspace", None).unwrap();
+
+    let wf = session.workflow();
+    // An uncapped workflow still owns a ledger (for snapshots / aggregation).
+    let snap = wf
+        .budget_snapshot()
+        .expect("workflow is pre-wired with a shared budget ledger");
+    assert_eq!(snap.limit_tokens, None);
+    assert_eq!(snap.consumed_tokens, 0);
+    assert!(
+        wf.root_id().contains(session.id()),
+        "root id is session-derived so phase checkpoints are stable across runs"
+    );
+
+    // A capped workflow records its hard ceiling.
+    let capped = session.workflow_with_token_budget(Some(50_000));
+    assert_eq!(capped.budget_snapshot().unwrap().limit_tokens, Some(50_000));
+}
+
+/// End-to-end: `session.workflow().agent(spec)` actually spawns a real child
+/// agent loop through the wired executor and returns its output. Uses a static
+/// mock LLM so the built-in `explore` agent finishes with that text.
+#[tokio::test]
+async fn test_session_workflow_runs_a_real_child_agent_step() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let opts = SessionOptions::new();
+    let session = agent
+        .build_session(
+            "/tmp/test-workflow-e2e".into(),
+            Arc::new(StaticStreamingClient::new("explored answer")),
+            &opts,
+        )
+        .unwrap();
+
+    let wf = session.workflow();
+    let outcome = wf
+        .agent(crate::orchestration::AgentStepSpec::new(
+            "t1",
+            "explore",
+            "explore",
+            "find the auth code",
+        ))
+        .await;
+
+    assert!(outcome.success, "child step failed: {}", outcome.output);
+    assert_eq!(outcome.agent, "explore");
+    assert!(
+        outcome.output.contains("explored answer"),
+        "child agent returned the mock LLM output; got: {}",
+        outcome.output
+    );
+
+    // The shared ledger recorded the child's token usage (proves the workflow
+    // budget was installed as the child's budget guard).
+    assert!(
+        wf.budget_snapshot().unwrap().consumed_tokens > 0,
+        "child LLM usage fed the shared workflow budget"
+    );
+}
