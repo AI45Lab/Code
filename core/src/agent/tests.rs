@@ -2003,3 +2003,101 @@ async fn test_agent_end_event_contains_final_text() {
         assert_eq!(usage.total_tokens, 15);
     }
 }
+
+/// Regression: the parallel write fast path bypasses `ToolSafetyGate`, so it
+/// may run only when the gate would unconditionally EXECUTE every call. Before
+/// the fix it ignored the permission checker and skill restrictions entirely,
+/// letting denied / ask / skill-restricted writes land ungated.
+#[test]
+fn parallel_write_batch_only_fast_paths_when_gate_would_execute() {
+    use crate::llm::ToolCall;
+    use crate::permissions::{PermissionChecker, PermissionDecision};
+    use crate::skills::{Skill, SkillKind, SkillRegistry};
+
+    struct Static(PermissionDecision);
+    impl PermissionChecker for Static {
+        fn check(&self, _tool: &str, _args: &serde_json::Value) -> PermissionDecision {
+            self.0
+        }
+    }
+
+    fn write_call(id: &str, path: &str) -> ToolCall {
+        ToolCall {
+            id: id.to_string(),
+            name: "write_file".to_string(),
+            args: serde_json::json!({ "path": path, "content": "x" }),
+        }
+    }
+
+    fn loop_with(
+        checker: Option<Arc<dyn PermissionChecker>>,
+        skills: Option<Arc<SkillRegistry>>,
+    ) -> AgentLoop {
+        // `skill_registry` overrides the default builtins where needed.
+        let config = AgentConfig {
+            permission_checker: checker,
+            skill_registry: skills,
+            ..Default::default()
+        };
+        AgentLoop::new(
+            Arc::new(MockLlmClient::new(vec![])),
+            Arc::new(ToolExecutor::new("/tmp".to_string())),
+            test_tool_context(),
+            config,
+        )
+    }
+
+    let calls = vec![write_call("a", "a.txt"), write_call("b", "b.txt")];
+    let allow = || Some(Arc::new(Static(PermissionDecision::Allow)) as Arc<dyn PermissionChecker>);
+
+    // Explicit Allow + no restricting skills → fast path is taken.
+    assert!(
+        loop_with(allow(), None).can_run_parallel_write_batch(&calls),
+        "explicit Allow with no restrictions → parallel write batch is allowed"
+    );
+
+    // No permission checker → gate resolves to Ask (a Deny without a confirmation
+    // manager), so the fast path must be refused.
+    assert!(
+        !loop_with(None, None).can_run_parallel_write_batch(&calls),
+        "missing checker resolves to Ask/Deny → fast path refused"
+    );
+
+    // Explicit Deny → refused.
+    assert!(
+        !loop_with(Some(Arc::new(Static(PermissionDecision::Deny))), None)
+            .can_run_parallel_write_batch(&calls),
+        "permission Deny → fast path refused"
+    );
+
+    // Ask → refused (sequential path would need a human round-trip).
+    assert!(
+        !loop_with(Some(Arc::new(Static(PermissionDecision::Ask))), None)
+            .can_run_parallel_write_batch(&calls),
+        "permission Ask → fast path refused"
+    );
+
+    // Allow, but an active skill restriction forbids write_file → refused.
+    let restricted = SkillRegistry::new();
+    restricted.register_unchecked(Arc::new(Skill {
+        name: "read-only".to_string(),
+        description: String::new(),
+        allowed_tools: Some("read(*)".to_string()),
+        disable_model_invocation: false,
+        kind: SkillKind::Instruction,
+        content: String::new(),
+        tags: Vec::new(),
+        version: None,
+    }));
+    assert!(
+        !loop_with(allow(), Some(Arc::new(restricted))).can_run_parallel_write_batch(&calls),
+        "active skill restriction disallowing write_file → fast path refused"
+    );
+
+    // Default builtins do not restrict → still fast-paths with Allow.
+    assert!(
+        loop_with(allow(), Some(Arc::new(SkillRegistry::with_builtins())))
+            .can_run_parallel_write_batch(&calls),
+        "non-restricting builtins → fast path still allowed"
+    );
+}

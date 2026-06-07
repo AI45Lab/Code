@@ -101,7 +101,7 @@ impl<'a> ToolSafetyGate<'a> {
         }
     }
 
-    fn check_skill_restrictions(&self, tool_name: &str) -> Option<ToolGateDecision> {
+    pub(crate) fn check_skill_restrictions(&self, tool_name: &str) -> Option<ToolGateDecision> {
         let registry = self.config.skill_registry.as_ref()?;
         let restricting_skills = registry.global_tool_restricting_skills();
         if restricting_skills.is_empty() {
@@ -123,7 +123,11 @@ impl<'a> ToolSafetyGate<'a> {
         })
     }
 
-    fn permission_decision(&self, tool_name: &str, args: &serde_json::Value) -> PermissionDecision {
+    pub(crate) fn permission_decision(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+    ) -> PermissionDecision {
         self.config
             .permission_checker
             .as_ref()

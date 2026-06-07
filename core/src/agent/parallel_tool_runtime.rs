@@ -83,10 +83,35 @@ impl AgentLoop {
     }
 
     pub(super) fn can_run_parallel_write_batch(&self, tool_calls: &[ToolCall]) -> bool {
+        // The parallel fast path executes tools directly via the ToolExecutor
+        // (see `execute_parallel_write_batch`), bypassing `ToolSafetyGate`. It is
+        // only safe when the gate would unconditionally EXECUTE every call.
+        //
+        // Hooks and HITL confirmation make the decision stateful/interactive
+        // (pre-tool hooks have side effects; an `Ask` must round-trip to a
+        // human), so never fast-path when either is configured.
         if self.config.hook_engine.is_some()
             || self.config.confirmation_manager.is_some()
             || tool_calls.len() <= 1
         {
+            return false;
+        }
+
+        // Skill restrictions and permission checks live in `ToolSafetyGate`,
+        // which the parallel path skips entirely. Consult the gate itself (the
+        // single source of truth) and only fast-path when, for EVERY call, no
+        // active skill restriction forbids the tool AND the permission checker
+        // explicitly Allows it. A missing checker resolves to `Ask`, which with
+        // no confirmation manager is a Deny — so it correctly refuses here.
+        let gate = crate::safety_gate::ToolSafetyGate::new(&self.config);
+        let all_allowed = tool_calls.iter().all(|tc| {
+            gate.check_skill_restrictions(&tc.name).is_none()
+                && matches!(
+                    gate.permission_decision(&tc.name, &tc.args),
+                    crate::permissions::PermissionDecision::Allow
+                )
+        });
+        if !all_allowed {
             return false;
         }
 
