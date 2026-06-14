@@ -60,7 +60,10 @@ jobs:
             3.13
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        # Pinned: brotli 8.0.3 (transitive via tower-http, ahp/s3 features) fails
+        # to compile on newer stable rustc; 1.94.1 is the known-good build that
+        # shipped earlier releases. Revisit when the brotli/toolchain break clears.
+        uses: dtolnay/rust-toolchain@1.94.1
         with:
           targets: ${{ matrix.settings.target }}
 
@@ -82,6 +85,9 @@ jobs:
           target: ${{ matrix.settings.target }}
           args: --release --out dist --manifest-path sdk/python/Cargo.toml -i python3.10 -i python3.11 -i python3.12 -i python3.13
           manylinux: ${{ matrix.settings.manylinux || 'auto' }}
+          # Pin the toolchain maturin installs (incl. inside the manylinux
+          # container) so brotli 8.0.3 compiles. See "Install Rust" note above.
+          rust-toolchain: 1.94.1
 
       - name: Upload wheels to GitHub Releases
         uses: actions/upload-artifact@v4

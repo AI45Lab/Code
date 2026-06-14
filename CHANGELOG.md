@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.6.1] - 2026-06-14
+
+Release-engineering fix for 3.6.0 (no library code changes). The 3.6.0 tag
+published `a3s-code-core` to crates.io, but the native SDK build jobs failed
+because **brotli 8.0.3** (pulled transitively via `tower-http` under the
+`ahp`/`s3` features) no longer compiles on the newest stable Rust — so the npm,
+PyPI, and GitHub Release artifacts were skipped. This release ships those.
+
+### Fixed
+
+- **Pin the SDK build toolchain** — `publish-node.yml` / `publish-python.yml`
+  now use `dtolnay/rust-toolchain@1.94.1` (and pass `rust-toolchain: 1.94.1` to
+  `maturin-action`) instead of `@stable`, restoring the known-good build that
+  shipped earlier releases. Revisit when the upstream brotli/toolchain break
+  clears.
+- **Refresh the SDK lockfiles** — `sdk/{node,python}/Cargo.lock` now pin
+  `a3s-code-core` to the release version (previously left stale, which forced a
+  dependency re-resolution that pulled a second `alloc-no-stdlib`).
+
 ## [3.6.0] - 2026-06-14
 
 A system-prompt hardening pass plus framework-vs-host boundary tightening:

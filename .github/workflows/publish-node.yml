@@ -42,7 +42,10 @@ jobs:
           node-version: 20
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        # Pinned: brotli 8.0.3 (transitive via tower-http, ahp/s3 features) fails
+        # to compile on newer stable rustc; 1.94.1 is the known-good build that
+        # shipped earlier releases. Revisit when the brotli/toolchain break clears.
+        uses: dtolnay/rust-toolchain@1.94.1
         with:
           targets: ${{ matrix.settings.target }}
 
