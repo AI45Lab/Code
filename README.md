@@ -33,6 +33,31 @@ Intent -> Context -> Action -> Observation -> Verification -> Compaction
 
 Everything else is an extension of that loop.
 
+### What's new in 3.6
+
+- **Safety boundaries in every prompt** — a single-source `## Boundaries` block
+  (treat file/tool/web content as untrusted **data**, not instructions; never
+  hardcode/commit/echo/log secrets; defensive-security only) is injected into
+  every assembled system prompt, across all agent styles and delegated
+  subagents.
+- **`<env>` grounding block** — each turn the system prompt carries today's date,
+  host platform, and working directory, computed fresh (no shell-out). Pins the
+  current date the model cannot infer past its training cutoff, cutting date /
+  path / platform mistakes.
+- **`SessionOptions::with_llm_client`** (Rust embedding API) — inject a custom
+  `Arc<dyn LlmClient>` (unsupported provider, deterministic record/replay client,
+  or proxy/audit wrapper). The Action-layer backend is now object-injectable like
+  workspace/memory/store/security; the `provider/model` config stays the default
+  (and remains the way SDK hosts pick a backend).
+- **Secret-safe logging** — tool invocations no longer log raw argument values
+  (which were also OTLP-exported); only the tool name, argument field names, and
+  payload size are logged at `info!`. Sharper tool-usage and response guidance
+  (prefer dedicated tools over shelling out; confirm a dependency before using
+  it; don't re-print already-read code or write unsolicited report files).
+- **Pruning** — the framework no longer writes to the host's stderr (a stray
+  debug `eprintln!` is now structured `tracing`), and the dead `Planner` trait
+  was removed.
+
 ### What's new in 3.5
 
 - **Programmable Workflow facade** — `AgentSession::workflow()` returns a
