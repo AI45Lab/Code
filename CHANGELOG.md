@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.6.2] - 2026-06-14
+
+Release-engineering fix for 3.6.0/3.6.1 (no library code changes). Both prior
+tags published `a3s-code-core` to crates.io but failed every native SDK build,
+so npm / PyPI / GitHub Release were skipped.
+
+True root cause: **`sdk/{node,python}/Cargo.lock` were git-ignored** (never
+committed), so CI resolved the SDK dependency graph fresh on each release. A
+newly-published `alloc-no-stdlib 3.0.0` then got pulled alongside `2.0.4`,
+producing a duplicate that breaks `brotli 8.0.3`'s `StandardAlloc: Allocator`
+impl. (The 3.6.1 toolchain pin was a misdiagnosis — the build fails the same way
+on any toolchain when the lock isn't honored.)
+
+### Fixed
+
+- **Commit the SDK lockfiles** — `sdk/node/Cargo.lock` and
+  `sdk/python/Cargo.lock` are now tracked (removed from `.gitignore`), pinning a
+  single consistent `alloc-no-stdlib 2.0.4` + `brotli 8.0.3`. CI now builds the
+  exact, locally-verified resolution instead of re-resolving. Verified with the
+  real `cargo build --release` for both SDKs (not just `cargo check`).
+
 ## [3.6.1] - 2026-06-14
 
 Release-engineering fix for 3.6.0 (no library code changes). The 3.6.0 tag
