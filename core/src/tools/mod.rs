@@ -222,6 +222,37 @@ pub struct ToolExecutor {
     workspace_services: Arc<crate::workspace::WorkspaceServices>,
 }
 
+/// Build a log line for a tool invocation that excludes argument *values*.
+///
+/// Argument values (full bash commands, file contents written by `write`/`edit`)
+/// can contain secrets, so the summary records only the tool name, the sorted
+/// argument field names, and the serialized payload size — never the values. This
+/// keeps the always-on `info!` tool trace (also exported to OTLP) compliant with
+/// the "never log secrets" boundary. Use `trace!` for full args when debugging.
+fn redacted_tool_log_summary(name: &str, args: &serde_json::Value) -> String {
+    let arg_keys: Vec<&str> = match args.as_object() {
+        Some(map) => {
+            let mut keys: Vec<&str> = map.keys().map(String::as_str).collect();
+            keys.sort_unstable();
+            keys
+        }
+        None => Vec::new(),
+    };
+    format!(
+        "Executing tool: {} (arg_keys={:?}, {} bytes)",
+        name,
+        arg_keys,
+        args.to_string().len()
+    )
+}
+
+/// Log a tool invocation without leaking argument values. See
+/// [`redacted_tool_log_summary`] for the redaction rationale.
+fn log_tool_invocation(name: &str, args: &serde_json::Value) {
+    tracing::info!("{}", redacted_tool_log_summary(name, args));
+    tracing::trace!("Tool {} full args: {}", name, args);
+}
+
 impl ToolExecutor {
     pub fn new(workspace: String) -> Self {
         let workspace_services =
@@ -425,7 +456,7 @@ impl ToolExecutor {
             return Ok(ToolResult::error(name, e.to_string()));
         }
 
-        tracing::info!("Executing tool: {} with args: {}", name, args);
+        log_tool_invocation(name, args);
         self.capture_snapshot(name, args);
         let mut result = self.registry.execute_with_context(name, args, &ctx).await;
         if let Ok(ref mut r) = result {
@@ -445,7 +476,7 @@ impl ToolExecutor {
         ctx: &ToolContext,
     ) -> Result<ToolResult> {
         Self::check_workspace_boundary(name, args, ctx)?;
-        tracing::info!("Executing tool: {} with args: {}", name, args);
+        log_tool_invocation(name, args);
         self.capture_snapshot(name, args);
         let mut result = self.registry.execute_with_context(name, args, ctx).await;
         if let Ok(ref mut r) = result {
@@ -486,6 +517,31 @@ mod tests {
     };
     use async_trait::async_trait;
     use std::sync::RwLock;
+
+    #[test]
+    fn test_redacted_tool_log_summary_omits_values() {
+        let args = serde_json::json!({
+            "command": "export AWS_SECRET_ACCESS_KEY=AKIAIOSFODNN7EXAMPLE && deploy",
+            "timeout": 30
+        });
+        let summary = redacted_tool_log_summary("bash", &args);
+        // Field names and size are logged...
+        assert!(summary.contains("bash"));
+        assert!(summary.contains("command"));
+        assert!(summary.contains("timeout"));
+        assert!(summary.contains("bytes"));
+        // ...but never the values (the secret must not appear).
+        assert!(!summary.contains("AKIAIOSFODNN7EXAMPLE"));
+        assert!(!summary.contains("deploy"));
+    }
+
+    #[test]
+    fn test_redacted_tool_log_summary_handles_non_object_args() {
+        let summary = redacted_tool_log_summary("noop", &serde_json::json!("raw string"));
+        assert!(summary.contains("noop"));
+        assert!(summary.contains("arg_keys=[]"));
+        assert!(!summary.contains("raw string"));
+    }
 
     struct LargeArtifactTool;
 

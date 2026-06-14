@@ -28,6 +28,13 @@ pub const SYSTEM_DEFAULT: &str = include_str!("../prompts/common/system_default.
 /// completing the task (i.e. stops calling tools mid-task).
 pub const CONTINUATION: &str = include_str!("../prompts/common/continuation.md");
 
+/// Safety boundaries (injection hygiene, secret handling, malicious-code refusal).
+///
+/// Single source of truth, appended to every assembled system prompt by
+/// [`SystemPromptSlots::build_with_style`] so it applies uniformly across all
+/// agent styles and delegated subagents (which build through the same path).
+pub const BOUNDARIES: &str = include_str!("../prompts/common/boundaries.md");
+
 // ============================================================================
 // Delegated Run Prompts
 // ============================================================================
@@ -500,6 +507,11 @@ impl SystemPromptSlots {
 
         parts.push(core);
 
+        // 2b. Safety boundaries — single source of truth, appended uniformly so
+        // every style and delegated subagent (which build through this path)
+        // carries injection-hygiene, secret-handling, and malware-refusal rules.
+        parts.push(BOUNDARIES.replace('\r', "").trim_end().to_string());
+
         // 3. Custom response style (replaces default Response Format)
         if let Some(ref style) = self.response_style {
             parts.push(format!("## Response Format\n\n{}", style));
@@ -591,6 +603,7 @@ mod tests {
         // Verify all prompts are non-empty at compile time
         assert!(!SYSTEM_DEFAULT.is_empty());
         assert!(!CONTINUATION.is_empty());
+        assert!(!BOUNDARIES.is_empty());
         assert!(!AGENT_EXPLORE.is_empty());
         assert!(!AGENT_PLAN.is_empty());
         assert!(!AGENT_CODE_REVIEW.is_empty());
@@ -654,6 +667,36 @@ mod tests {
         assert!(built.contains("Completion Criteria"));
         assert!(built.contains("Response Format"));
         assert!(built.contains("A3S Code"));
+        // Safety boundaries are injected even though they no longer live inline
+        // in system_default.md.
+        assert!(built.contains("## Boundaries"));
+        assert!(built.contains("untrusted data"));
+    }
+
+    #[test]
+    fn test_boundaries_injected_for_every_style() {
+        for style in [
+            AgentStyle::GeneralPurpose,
+            AgentStyle::Plan,
+            AgentStyle::Verification,
+            AgentStyle::Explore,
+            AgentStyle::CodeReview,
+        ] {
+            let built = SystemPromptSlots::default().with_style(style).build();
+            assert!(
+                built.contains("## Boundaries"),
+                "style {style:?} missing Boundaries section"
+            );
+        }
+    }
+
+    #[test]
+    fn test_boundaries_not_duplicated_in_general_purpose() {
+        // system_default.md must NOT carry an inline copy (single source of truth
+        // is boundaries.md, injected by build_with_style).
+        assert!(!SYSTEM_DEFAULT.contains("## Boundaries"));
+        let built = SystemPromptSlots::default().build();
+        assert_eq!(built.matches("## Boundaries").count(), 1);
     }
 
     #[test]
