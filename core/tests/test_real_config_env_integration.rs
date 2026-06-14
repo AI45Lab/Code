@@ -20,10 +20,36 @@ fn repo_config_path() -> PathBuf {
         })
 }
 
+/// Self-contained ACL fixture for the offline resolution tests.
+///
+/// Hermetic on purpose: the offline tests must NOT read the developer-local,
+/// git-ignored `.a3s/config.acl` — its `default_model` and provider secrets vary
+/// per machine (which is what previously broke these tests). `env_style_config_file`
+/// rewrites the literal `apiKey`/`baseUrl` below into `env(...)` references so the
+/// env-injection resolution path is exercised against known, stable values.
+const FIXTURE_CONFIG_ACL: &str = r#"default_model = "openai/MiniMax-M2.7-highspeed"
+
+providers "openai" {
+  apiKey = "fixture-openai-key"
+  baseUrl = "http://fixture.invalid/v1/"
+
+  models "MiniMax-M2.7-highspeed" {
+    name = "MiniMax-M2.7-highspeed"
+    family = ""
+    attachment = false
+    reasoning = false
+    toolCall = true
+    temperature = true
+    releaseDate = null
+    modalities = { input = ["text"], output = ["text"] }
+    cost = { input = 0, output = 0, cacheRead = 0, cacheWrite = 0 }
+    limit = { context = 128000, output = 4096 }
+  }
+}
+"#;
+
 fn env_style_config_file() -> tempfile::NamedTempFile {
-    let config_path = repo_config_path();
-    let content = std::fs::read_to_string(&config_path)
-        .unwrap_or_else(|err| panic!("failed to load {}: {err}", config_path.display()));
+    let content = FIXTURE_CONFIG_ACL.to_string();
 
     let mut output = String::new();
     let mut in_openai_provider = false;

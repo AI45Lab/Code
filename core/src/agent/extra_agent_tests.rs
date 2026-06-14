@@ -714,7 +714,12 @@ fn test_build_augmented_system_prompt_no_custom_slots() {
     let result = agent.build_augmented_system_prompt(&[]);
     // Default slots still produce the default agentic prompt
     assert!(result.is_some());
-    assert!(result.unwrap().contains("Core Behaviour"));
+    let text = result.unwrap();
+    assert!(text.contains("Core Behaviour"));
+    // The always-on <env> grounding block is injected at augmentation time.
+    assert!(text.contains("<env>"));
+    assert!(text.contains("Today's date:"));
+    assert!(text.contains("## Boundaries"));
 }
 
 #[test]

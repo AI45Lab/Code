@@ -381,7 +381,11 @@ impl AgentLoop {
             String::new()
         };
 
-        let parts: Vec<&str> = [base.as_str(), mcp_section.as_str()]
+        // Always-on grounding facts the model cannot infer from tool output —
+        // most importantly today's date (training cutoff is in the past).
+        let env_section = render_env_block(&self.tool_context.workspace);
+
+        let parts: Vec<&str> = [base.as_str(), env_section.as_str(), mcp_section.as_str()]
             .iter()
             .filter(|s| !s.is_empty())
             .copied()
@@ -420,5 +424,51 @@ impl AgentLoop {
             }
         }
         None
+    }
+}
+
+/// Render the always-on `<env>` grounding block.
+///
+/// Supplies the few facts the model cannot recover from tool output: today's
+/// date (the training cutoff is in the past, so the model must not guess it),
+/// the host platform, and the working directory. Computed fresh from live values
+/// each turn — cheap (no shell-out), so it is built in code rather than a static
+/// template that would serve stale data.
+fn render_env_block(workspace: &std::path::Path) -> String {
+    format!(
+        "<env>\nWorking directory: {}\nPlatform: {} ({})\nToday's date: {}\n</env>",
+        workspace.display(),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        chrono::Local::now().format("%Y-%m-%d"),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_env_block;
+
+    #[test]
+    fn env_block_contains_grounding_facts() {
+        let block = render_env_block(std::path::Path::new("/tmp/demo-ws"));
+        assert!(block.starts_with("<env>"), "block: {block}");
+        assert!(block.trim_end().ends_with("</env>"));
+        assert!(block.contains("Working directory: /tmp/demo-ws"));
+        assert!(block.contains("Platform:"));
+        assert!(block.contains(std::env::consts::OS));
+        assert!(block.contains("Today's date:"));
+    }
+
+    #[test]
+    fn env_block_date_is_iso_yyyy_mm_dd() {
+        let block = render_env_block(std::path::Path::new("/tmp"));
+        let line = block
+            .lines()
+            .find(|l| l.starts_with("Today's date:"))
+            .expect("date line present");
+        let date = line.trim_start_matches("Today's date:").trim();
+        assert_eq!(date.len(), 10, "date not YYYY-MM-DD: {date}");
+        assert_eq!(date.matches('-').count(), 2, "date not YYYY-MM-DD: {date}");
+        assert!(date.chars().all(|c| c.is_ascii_digit() || c == '-'));
     }
 }
