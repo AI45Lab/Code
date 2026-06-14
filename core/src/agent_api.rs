@@ -136,6 +136,14 @@ pub struct SessionOptions {
     pub queue_config: Option<SessionQueueConfig>,
     /// Optional security provider for taint tracking and output sanitization
     pub security_provider: Option<Arc<dyn crate::security::SecurityProvider>>,
+    /// Optional host-supplied LLM client.
+    ///
+    /// When set, it is used directly, overriding the `provider/model`
+    /// factory resolution — the one Action-layer backend that was previously
+    /// only injectable in test code. Lets a host plug in a provider the
+    /// built-in factory does not cover, a deterministic record/replay client,
+    /// or an HTTP-layer proxy/audit wrapper. Mirrors `workspace_services`.
+    pub llm_client: Option<Arc<dyn crate::llm::LlmClient>>,
     /// Optional context providers for RAG
     pub context_providers: Vec<Arc<dyn crate::context::ContextProvider>>,
     /// Optional confirmation manager for HITL

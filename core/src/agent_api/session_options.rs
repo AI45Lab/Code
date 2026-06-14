@@ -21,6 +21,7 @@ impl std::fmt::Debug for SessionOptions {
             .field("skill_dirs", &self.skill_dirs)
             .field("queue_config", &self.queue_config)
             .field("security_provider", &self.security_provider.is_some())
+            .field("llm_client", &self.llm_client.is_some())
             .field("context_providers", &self.context_providers.len())
             .field("confirmation_manager", &self.confirmation_manager.is_some())
             .field("permission_checker", &self.permission_checker.is_some())
@@ -107,6 +108,18 @@ impl SessionOptions {
         provider: Arc<dyn crate::security::SecurityProvider>,
     ) -> Self {
         self.security_provider = Some(provider);
+        self
+    }
+
+    /// Provide a custom LLM client for this session.
+    ///
+    /// When set, this client is used directly, overriding the `provider/model`
+    /// factory resolution. Use it to plug in a provider the built-in factory
+    /// does not cover, a deterministic record/replay client for tests, or an
+    /// HTTP-layer proxy/audit wrapper. Mirrors [`Self::with_workspace_backend`];
+    /// the `provider/model` config path remains the default when unset.
+    pub fn with_llm_client(mut self, client: Arc<dyn crate::llm::LlmClient>) -> Self {
+        self.llm_client = Some(client);
         self
     }
 

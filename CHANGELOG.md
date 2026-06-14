@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Framework-vs-host boundary tightening: wire the one missing Action-layer seam,
+stop the framework writing to the host's output channel, and prune a dead
+abstraction.
+
+### Added
+
+- **`SessionOptions::with_llm_client`** — hosts can now inject a custom
+  `Arc<dyn LlmClient>` (custom/unsupported provider, deterministic record/replay
+  client, or HTTP proxy/audit wrapper). The `LlmClient` trait and `Arc<dyn>`
+  engine already existed but were only injectable in test code; this wires the
+  seam through the public API, bringing the Action-layer backend to parity with
+  workspace/memory/store/security (all object-injectable). The `provider/model`
+  factory remains the default when unset.
+
+### Fixed
+
+- **Framework no longer writes to the host's stderr** — replaced a stray
+  `eprintln!("[DEBUG] HTTP error...")` in the OpenAI client (fired on every
+  transport error, also leaking into the host terminal) with `tracing::error!`,
+  consistent with the rest of the crate.
+
+### Removed
+
+- **Dead `Planner` trait** (`planning::Planner`) — it was re-exported but had no
+  `dyn Planner` dispatch and no consumer; every call site uses `LlmPlanner`'s
+  inherent methods directly. Removed per the pruning rule (the real variability,
+  the LLM, is swappable via `with_llm_client`). `LlmPlanner` is unchanged.
+
 ## [3.4.0] - 2026-05-30
 
 Programmable, deterministic multi-agent orchestration — a grammar for

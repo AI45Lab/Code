@@ -10,6 +10,13 @@ pub(super) fn resolve_session_llm_client(
     opts: &SessionOptions,
     session_id: Option<&str>,
 ) -> Result<Arc<dyn LlmClient>> {
+    // A host-supplied client overrides the provider-string factory entirely:
+    // the host owns the full Action-layer dependency (custom provider, replay
+    // client, proxy/audit wrapper). Config-based model resolution is bypassed.
+    if let Some(ref client) = opts.llm_client {
+        return Ok(Arc::clone(client));
+    }
+
     let model_ref = if let Some(ref model) = opts.model {
         model.as_str()
     } else {
@@ -91,6 +98,62 @@ pub(super) fn resolve_session_memory(opts: &SessionOptions) -> ResolvedSessionMe
     ResolvedSessionMemory {
         memory: store.map(|s| Arc::new(crate::memory::AgentMemory::new(s))),
         init_warning,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::llm::{LlmResponse, Message, StreamEvent, ToolDefinition};
+    // The LlmClient trait returns anyhow::Result; shadow super's crate::error::Result.
+    use anyhow::Result;
+    use async_trait::async_trait;
+    use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
+
+    struct DummyClient;
+
+    #[async_trait]
+    impl LlmClient for DummyClient {
+        async fn complete(
+            &self,
+            _: &[Message],
+            _: Option<&str>,
+            _: &[ToolDefinition],
+        ) -> Result<LlmResponse> {
+            anyhow::bail!("resolver short-circuits before the client is called")
+        }
+        async fn complete_streaming(
+            &self,
+            _: &[Message],
+            _: Option<&str>,
+            _: &[ToolDefinition],
+            _: CancellationToken,
+        ) -> Result<mpsc::Receiver<StreamEvent>> {
+            anyhow::bail!("not used")
+        }
+    }
+
+    // A default CodeConfig has no default_model, so the provider-string factory
+    // path errors — proving the override is what makes resolution succeed.
+    #[test]
+    fn host_supplied_llm_client_overrides_factory() {
+        let config = CodeConfig::default();
+        let opts = SessionOptions::new().with_llm_client(Arc::new(DummyClient));
+        assert!(
+            resolve_session_llm_client(&config, &opts, None).is_ok(),
+            "with_llm_client must bypass provider/model config resolution"
+        );
+    }
+
+    #[test]
+    fn without_llm_client_missing_default_model_errors() {
+        let config = CodeConfig::default();
+        let opts = SessionOptions::new();
+        assert!(
+            resolve_session_llm_client(&config, &opts, None).is_err(),
+            "no host client + no default_model should error (control case)"
+        );
     }
 }
 

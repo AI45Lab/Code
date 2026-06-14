@@ -356,7 +356,7 @@ impl LlmClient for OpenAiClient {
                             }
                         }
                         Err(e) => {
-                            eprintln!("[DEBUG] HTTP error: {:?}", e);
+                            tracing::error!("HTTP error: {e:?}");
                             AttemptOutcome::Fatal(e)
                         }
                     }

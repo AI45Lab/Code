@@ -7,7 +7,6 @@
 use crate::llm::{LlmClient, Message};
 use crate::planning::{AgentGoal, Complexity, ExecutionPlan, Task};
 use anyhow::{Context, Result};
-use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -31,27 +30,6 @@ pub struct PreAnalysis {
     pub execution_plan: ExecutionPlan,
     /// LLM-rewritten version of the user input with ambiguities resolved.
     pub optimized_input: String,
-}
-
-/// Trait for planning providers
-///
-/// Abstracts plan generation, goal extraction, and achievement evaluation.
-/// Allows different implementations (LLM-based, heuristic, test mocks).
-#[async_trait]
-pub trait Planner: Send + Sync {
-    /// Generate an execution plan from a prompt
-    async fn create_plan(&self, llm: &Arc<dyn LlmClient>, prompt: &str) -> Result<ExecutionPlan>;
-
-    /// Extract a goal with success criteria from a prompt
-    async fn extract_goal(&self, llm: &Arc<dyn LlmClient>, prompt: &str) -> Result<AgentGoal>;
-
-    /// Evaluate whether a goal has been achieved given current state
-    async fn check_achievement(
-        &self,
-        llm: &Arc<dyn LlmClient>,
-        goal: &AgentGoal,
-        current_state: &str,
-    ) -> Result<AchievementResult>;
 }
 
 /// LLM-powered planner that generates plans, extracts goals, and evaluates achievement
@@ -377,27 +355,6 @@ impl LlmPlanner {
         }
 
         trimmed
-    }
-}
-
-// Implement Planner trait for LlmPlanner
-#[async_trait]
-impl Planner for LlmPlanner {
-    async fn create_plan(&self, llm: &Arc<dyn LlmClient>, prompt: &str) -> Result<ExecutionPlan> {
-        LlmPlanner::create_plan(llm, prompt).await
-    }
-
-    async fn extract_goal(&self, llm: &Arc<dyn LlmClient>, prompt: &str) -> Result<AgentGoal> {
-        LlmPlanner::extract_goal(llm, prompt).await
-    }
-
-    async fn check_achievement(
-        &self,
-        llm: &Arc<dyn LlmClient>,
-        goal: &AgentGoal,
-        current_state: &str,
-    ) -> Result<AchievementResult> {
-        LlmPlanner::check_achievement(llm, goal, current_state).await
     }
 }
 
