@@ -319,6 +319,7 @@ The skill's allowed-tools are granted during execution and revoked after complet
 
         // Set the skill's permission policy as the permission checker
         skill_config.permission_checker = Some(Arc::new(skill_permission_policy));
+        skill_config.enforce_active_skill_tool_restrictions = true;
 
         // Create a temporary skill registry with only this skill
         let temp_registry = Arc::new(SkillRegistry::new());
@@ -514,6 +515,31 @@ mod tests {
         assert_eq!(
             policy.check("grep", &serde_json::json!({"pattern": "x"})),
             PermissionDecision::Deny
+        );
+    }
+
+    #[test]
+    fn test_skill_permission_policy_accepts_wildcard_allowed_tools() {
+        let skill = Skill {
+            name: "test-skill".to_string(),
+            description: "Test".to_string(),
+            allowed_tools: Some("*".to_string()),
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: String::new(),
+            tags: Vec::new(),
+            version: None,
+        };
+
+        let policy = SkillTool::create_skill_permission_policy(&skill);
+
+        assert_eq!(
+            policy.check("bash", &serde_json::json!({"command": "python --version"})),
+            PermissionDecision::Allow
+        );
+        assert_eq!(
+            policy.check("parallel_task", &serde_json::json!({"tasks": []})),
+            PermissionDecision::Allow
         );
     }
 

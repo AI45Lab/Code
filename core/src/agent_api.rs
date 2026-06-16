@@ -163,6 +163,12 @@ pub struct SessionOptions {
     pub skill_dirs: Vec<PathBuf>,
     /// Optional skill registry for instruction injection
     pub skill_registry: Option<Arc<crate::skills::SkillRegistry>>,
+    /// Whether active skill `allowed-tools` restrict ordinary session tool calls.
+    ///
+    /// Defaults to false so ordinary tools continue through permission policy,
+    /// hooks, HITL, and AHP. Set true to restore the legacy global active-skill
+    /// restriction behavior.
+    pub enforce_active_skill_tool_restrictions: Option<bool>,
     /// Optional memory store for long-term memory persistence
     pub memory_store: Option<Arc<dyn MemoryStore>>,
     /// Deferred file memory directory — constructed async in `build_session()`

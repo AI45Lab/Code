@@ -243,9 +243,9 @@ impl Skill {
         }
 
         // Check if any permission matches
-        permissions
-            .iter()
-            .any(|perm| perm.tool.eq_ignore_ascii_case(tool_name) && perm.pattern == "*")
+        permissions.iter().any(|perm| {
+            (perm.tool == "*" || perm.tool.eq_ignore_ascii_case(tool_name)) && perm.pattern == "*"
+        })
     }
 
     /// Get the skill content formatted for injection into system prompt
@@ -420,6 +420,24 @@ allowed-tools:
         assert!(skill.is_tool_allowed("read"));
         assert!(skill.is_tool_allowed("grep"));
         assert!(!skill.is_tool_allowed("write"));
+    }
+
+    #[test]
+    fn test_wildcard_allowed_tools_allows_any_tool() {
+        let skill = Skill {
+            name: "test".to_string(),
+            description: "test".to_string(),
+            allowed_tools: Some("*".to_string()),
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: String::new(),
+            tags: Vec::new(),
+            version: None,
+        };
+
+        assert!(skill.is_tool_allowed("read"));
+        assert!(skill.is_tool_allowed("bash"));
+        assert!(skill.is_tool_allowed("parallel_task"));
     }
 
     #[test]

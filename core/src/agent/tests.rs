@@ -2032,11 +2032,13 @@ fn parallel_write_batch_only_fast_paths_when_gate_would_execute() {
     fn loop_with(
         checker: Option<Arc<dyn PermissionChecker>>,
         skills: Option<Arc<SkillRegistry>>,
+        enforce_active_skill_tool_restrictions: bool,
     ) -> AgentLoop {
         // `skill_registry` overrides the default builtins where needed.
         let config = AgentConfig {
             permission_checker: checker,
             skill_registry: skills,
+            enforce_active_skill_tool_restrictions,
             ..Default::default()
         };
         AgentLoop::new(
@@ -2052,32 +2054,37 @@ fn parallel_write_batch_only_fast_paths_when_gate_would_execute() {
 
     // Explicit Allow + no restricting skills → fast path is taken.
     assert!(
-        loop_with(allow(), None).can_run_parallel_write_batch(&calls),
+        loop_with(allow(), None, false).can_run_parallel_write_batch(&calls),
         "explicit Allow with no restrictions → parallel write batch is allowed"
     );
 
     // No permission checker → gate resolves to Ask (a Deny without a confirmation
     // manager), so the fast path must be refused.
     assert!(
-        !loop_with(None, None).can_run_parallel_write_batch(&calls),
+        !loop_with(None, None, false).can_run_parallel_write_batch(&calls),
         "missing checker resolves to Ask/Deny → fast path refused"
     );
 
     // Explicit Deny → refused.
     assert!(
-        !loop_with(Some(Arc::new(Static(PermissionDecision::Deny))), None)
-            .can_run_parallel_write_batch(&calls),
+        !loop_with(
+            Some(Arc::new(Static(PermissionDecision::Deny))),
+            None,
+            false
+        )
+        .can_run_parallel_write_batch(&calls),
         "permission Deny → fast path refused"
     );
 
     // Ask → refused (sequential path would need a human round-trip).
     assert!(
-        !loop_with(Some(Arc::new(Static(PermissionDecision::Ask))), None)
+        !loop_with(Some(Arc::new(Static(PermissionDecision::Ask))), None, false)
             .can_run_parallel_write_batch(&calls),
         "permission Ask → fast path refused"
     );
 
-    // Allow, but an active skill restriction forbids write_file → refused.
+    // By default, active skill restrictions do not block ordinary session
+    // tools before the permission/AHP/HITL chain.
     let restricted = SkillRegistry::new();
     restricted.register_unchecked(Arc::new(Skill {
         name: "read-only".to_string(),
@@ -2089,15 +2096,27 @@ fn parallel_write_batch_only_fast_paths_when_gate_would_execute() {
         tags: Vec::new(),
         version: None,
     }));
+    let restricted = Arc::new(restricted);
     assert!(
-        !loop_with(allow(), Some(Arc::new(restricted))).can_run_parallel_write_batch(&calls),
-        "active skill restriction disallowing write_file → fast path refused"
+        loop_with(allow(), Some(Arc::clone(&restricted)), false)
+            .can_run_parallel_write_batch(&calls),
+        "default active skill restriction mode → fast path follows permission allow"
+    );
+
+    // Compatibility mode preserves the legacy refusal.
+    assert!(
+        !loop_with(allow(), Some(restricted), true).can_run_parallel_write_batch(&calls),
+        "legacy active skill restriction mode → fast path refused"
     );
 
     // Default builtins do not restrict → still fast-paths with Allow.
     assert!(
-        loop_with(allow(), Some(Arc::new(SkillRegistry::with_builtins())))
-            .can_run_parallel_write_batch(&calls),
+        loop_with(
+            allow(),
+            Some(Arc::new(SkillRegistry::with_builtins())),
+            false
+        )
+        .can_run_parallel_write_batch(&calls),
         "non-restricting builtins → fast path still allowed"
     );
 }

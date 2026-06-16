@@ -827,6 +827,7 @@ async fn test_tool_command_command_type() {
         tool_name: "read".to_string(),
         tool_args: serde_json::json!({"file": "test.rs"}),
         skill_registry: None,
+        enforce_active_skill_tool_restrictions: false,
         tool_context: test_tool_context(),
     };
     assert_eq!(cmd.command_type(), "read");
@@ -841,9 +842,75 @@ async fn test_tool_command_payload() {
         tool_name: "read".to_string(),
         tool_args: args.clone(),
         skill_registry: None,
+        enforce_active_skill_tool_restrictions: false,
         tool_context: test_tool_context(),
     };
     assert_eq!(cmd.payload(), args);
+}
+
+#[tokio::test]
+async fn test_tool_command_ignores_active_skill_restrictions_by_default() {
+    let registry = crate::skills::SkillRegistry::new();
+    registry.register_unchecked(Arc::new(crate::skills::Skill {
+        name: "read-only".to_string(),
+        description: String::new(),
+        allowed_tools: Some("read(*)".to_string()),
+        disable_model_invocation: false,
+        kind: crate::skills::SkillKind::Instruction,
+        content: String::new(),
+        tags: Vec::new(),
+        version: None,
+    }));
+
+    let cmd = ToolCommand {
+        tool_executor: Arc::new(ToolExecutor::new("/tmp".to_string())),
+        tool_name: "not_a_tool".to_string(),
+        tool_args: serde_json::json!({}),
+        skill_registry: Some(Arc::new(registry)),
+        enforce_active_skill_tool_restrictions: false,
+        tool_context: test_tool_context(),
+    };
+
+    let output = cmd.execute().await.unwrap();
+    let output = output["output"].as_str().unwrap_or_default();
+    assert!(
+        !output.contains("not allowed by any active skill"),
+        "default mode must let the command reach the tool executor, got: {output}"
+    );
+    assert!(
+        output.contains("Unknown tool"),
+        "default mode should reach the tool executor, got: {output}"
+    );
+}
+
+#[tokio::test]
+async fn test_tool_command_enforces_active_skill_restrictions_in_legacy_mode() {
+    let registry = crate::skills::SkillRegistry::new();
+    registry.register_unchecked(Arc::new(crate::skills::Skill {
+        name: "read-only".to_string(),
+        description: String::new(),
+        allowed_tools: Some("read(*)".to_string()),
+        disable_model_invocation: false,
+        kind: crate::skills::SkillKind::Instruction,
+        content: String::new(),
+        tags: Vec::new(),
+        version: None,
+    }));
+
+    let cmd = ToolCommand {
+        tool_executor: Arc::new(ToolExecutor::new("/tmp".to_string())),
+        tool_name: "not_a_tool".to_string(),
+        tool_args: serde_json::json!({}),
+        skill_registry: Some(Arc::new(registry)),
+        enforce_active_skill_tool_restrictions: true,
+        tool_context: test_tool_context(),
+    };
+
+    let err = cmd.execute().await.unwrap_err().to_string();
+    assert!(
+        err.contains("not allowed by any active skill"),
+        "legacy mode must deny before tool execution, got: {err}"
+    );
 }
 
 // ========================================================================

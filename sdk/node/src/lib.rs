@@ -1783,6 +1783,11 @@ pub struct SessionOptions {
     pub builtin_skills: Option<bool>,
     /// Extra directories to scan for skill files (.md with YAML frontmatter).
     pub skill_dirs: Option<Vec<String>>,
+    /// Whether active skill allowed-tools restrict ordinary session tool calls.
+    ///
+    /// Defaults to false. Set true to restore the legacy global active-skill
+    /// restriction before permission policy, hooks, HITL, or AHP run.
+    pub enforce_active_skill_tool_restrictions: Option<bool>,
     /// Extra directories to scan for agent files.
     pub agent_dirs: Option<Vec<String>>,
     /// Reproducible disposable workers to register for task delegation.
@@ -2302,6 +2307,9 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> napi::Result<R
         for d in dirs {
             opts = opts.with_skills_from_dir(d);
         }
+    }
+    if let Some(enabled) = o.enforce_active_skill_tool_restrictions {
+        opts = opts.with_active_skill_tool_restrictions(enabled);
     }
     if let Some(dirs) = o.agent_dirs {
         for d in dirs {
@@ -6047,6 +6055,25 @@ mod tests {
         assert!(!auto.auto_parallel);
         assert!((auto.min_confidence - 0.8).abs() < f32::EPSILON);
         assert_eq!(auto.max_tasks, 2);
+    }
+
+    #[test]
+    fn session_options_maps_active_skill_tool_restriction_control() {
+        let default_opts = js_session_options_to_rust(Some(SessionOptions {
+            ..Default::default()
+        }))
+        .unwrap();
+        assert_eq!(default_opts.enforce_active_skill_tool_restrictions, None);
+
+        let legacy_opts = js_session_options_to_rust(Some(SessionOptions {
+            enforce_active_skill_tool_restrictions: Some(true),
+            ..Default::default()
+        }))
+        .unwrap();
+        assert_eq!(
+            legacy_opts.enforce_active_skill_tool_restrictions,
+            Some(true)
+        );
     }
 
     #[test]

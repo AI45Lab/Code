@@ -155,6 +155,9 @@ pub(super) fn build_agent_session(
         planning_mode: opts.planning_mode,
         goal_tracking: opts.goal_tracking,
         skill_registry: Some(Arc::clone(&effective_registry)),
+        enforce_active_skill_tool_restrictions: opts
+            .enforce_active_skill_tool_restrictions
+            .unwrap_or(base.enforce_active_skill_tool_restrictions),
         max_parse_retries: opts.max_parse_retries.unwrap_or(base.max_parse_retries),
         tool_timeout_ms: opts.tool_timeout_ms.or(base.tool_timeout_ms),
         circuit_breaker_threshold: opts

@@ -2052,7 +2052,8 @@ async fn test_session_save_persists_runtime_config() {
         .with_model("openai/gpt-4o")
         .with_queue_config(queue_config)
         .with_confirmation_policy(confirmation_policy)
-        .with_permission_policy(permission_policy);
+        .with_permission_policy(permission_policy)
+        .with_active_skill_tool_restrictions(true);
     let session = agent
         .session("/tmp/test-ws-runtime-config", Some(opts))
         .unwrap();
@@ -2079,6 +2080,7 @@ async fn test_session_save_persists_runtime_config() {
         .permission_policy
         .as_ref()
         .is_some_and(|p| !p.allow.is_empty()));
+    assert!(data.config.enforce_active_skill_tool_restrictions);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2095,7 +2097,8 @@ async fn test_resume_session_restores_runtime_config() {
         .with_model("openai/gpt-4o")
         .with_queue_config(queue_config)
         .with_confirmation_policy(confirmation_policy)
-        .with_permission_policy(permission_policy);
+        .with_permission_policy(permission_policy)
+        .with_active_skill_tool_restrictions(true);
     let session = agent
         .session("/tmp/test-ws-resume-runtime", Some(opts))
         .unwrap();
@@ -2112,6 +2115,7 @@ async fn test_resume_session_restores_runtime_config() {
     assert!(resumed.config.confirmation_manager.is_some());
     assert!(resumed.config.permission_policy.is_some());
     assert!(resumed.config.permission_checker.is_some());
+    assert!(resumed.config.enforce_active_skill_tool_restrictions);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2621,14 +2625,38 @@ async fn test_session_options_builders() {
         .with_auto_save(true)
         .with_max_parallel_tasks(3)
         .with_auto_delegation_enabled(true)
-        .with_auto_parallel_delegation(false);
+        .with_auto_parallel_delegation(false)
+        .with_active_skill_tool_restrictions(true);
     assert_eq!(opts.session_id, Some("test-id".to_string()));
     assert!(opts.auto_save);
     assert_eq!(opts.max_parallel_tasks, Some(3));
     assert_eq!(opts.auto_parallel_delegation, Some(false));
+    assert_eq!(opts.enforce_active_skill_tool_restrictions, Some(true));
     let auto = opts.auto_delegation.expect("auto delegation config");
     assert!(auto.enabled);
     assert!(!auto.auto_parallel);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_active_skill_tool_restriction_option_defaults_and_overrides() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+
+    let default_session = agent
+        .session("/tmp/test-ws-skill-restriction-default", None)
+        .unwrap();
+    assert!(
+        !default_session
+            .config
+            .enforce_active_skill_tool_restrictions
+    );
+
+    let legacy_session = agent
+        .session(
+            "/tmp/test-ws-skill-restriction-legacy",
+            Some(SessionOptions::new().with_active_skill_tool_restrictions(true)),
+        )
+        .unwrap();
+    assert!(legacy_session.config.enforce_active_skill_tool_restrictions);
 }
 
 #[tokio::test(flavor = "multi_thread")]

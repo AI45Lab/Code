@@ -92,6 +92,12 @@ pub(crate) struct AgentConfig {
     pub hook_engine: Option<Arc<dyn HookExecutor>>,
     /// Optional skill registry for tool permission enforcement
     pub skill_registry: Option<Arc<crate::skills::SkillRegistry>>,
+    /// When true, active skill `allowed-tools` restrict ordinary session tool calls.
+    ///
+    /// The default is false: active skills may inject instructions, but ordinary
+    /// tool calls continue to the host permission/AHP/HITL approval chain.
+    /// Skill invocations still enable this for their child execution context.
+    pub enforce_active_skill_tool_restrictions: bool,
     /// Max consecutive malformed-tool-args errors before aborting (default: 2).
     ///
     /// When the LLM returns tool arguments with `__parse_error`, the error is
@@ -181,6 +187,10 @@ impl std::fmt::Debug for AgentConfig {
                 "skill_registry",
                 &self.skill_registry.as_ref().map(|r| r.len()),
             )
+            .field(
+                "enforce_active_skill_tool_restrictions",
+                &self.enforce_active_skill_tool_restrictions,
+            )
             .field("max_parse_retries", &self.max_parse_retries)
             .field("tool_timeout_ms", &self.tool_timeout_ms)
             .field("max_parallel_tasks", &self.max_parallel_tasks)
@@ -221,6 +231,7 @@ impl Default for AgentConfig {
             goal_tracking: false,
             hook_engine: None,
             skill_registry: Some(Arc::new(crate::skills::SkillRegistry::with_builtins())),
+            enforce_active_skill_tool_restrictions: false,
             max_parse_retries: 2,
             tool_timeout_ms: None,
             max_parallel_tasks: DEFAULT_MAX_PARALLEL_TASKS,
@@ -695,6 +706,7 @@ pub struct ToolCommand {
     tool_args: Value,
     tool_context: ToolContext,
     skill_registry: Option<Arc<crate::skills::SkillRegistry>>,
+    enforce_active_skill_tool_restrictions: bool,
 }
 
 impl ToolCommand {
@@ -705,6 +717,7 @@ impl ToolCommand {
         tool_args: Value,
         tool_context: ToolContext,
         skill_registry: Option<Arc<crate::skills::SkillRegistry>>,
+        enforce_active_skill_tool_restrictions: bool,
     ) -> Self {
         Self {
             tool_executor,
@@ -712,6 +725,7 @@ impl ToolCommand {
             tool_args,
             tool_context,
             skill_registry,
+            enforce_active_skill_tool_restrictions,
         }
     }
 }
@@ -720,25 +734,27 @@ impl ToolCommand {
 impl SessionCommand for ToolCommand {
     async fn execute(&self) -> Result<Value> {
         // Check skill-based tool permissions
-        if let Some(registry) = &self.skill_registry {
-            // If there are instruction skills with tool restrictions, check permissions
-            let restricting_skills = registry.global_tool_restricting_skills();
+        if self.enforce_active_skill_tool_restrictions {
+            if let Some(registry) = &self.skill_registry {
+                // If there are instruction skills with tool restrictions, check permissions
+                let restricting_skills = registry.global_tool_restricting_skills();
 
-            if !restricting_skills.is_empty() {
-                let mut allowed = false;
+                if !restricting_skills.is_empty() {
+                    let mut allowed = false;
 
-                for skill in &restricting_skills {
-                    if skill.is_tool_allowed(&self.tool_name) {
-                        allowed = true;
-                        break;
+                    for skill in &restricting_skills {
+                        if skill.is_tool_allowed(&self.tool_name) {
+                            allowed = true;
+                            break;
+                        }
                     }
-                }
 
-                if !allowed {
-                    return Err(anyhow::anyhow!(
+                    if !allowed {
+                        return Err(anyhow::anyhow!(
                         "Tool '{}' is not allowed by any active skill. Active skills restrict tools to their allowed-tools lists.",
                         self.tool_name
                     ));
+                    }
                 }
             }
         }

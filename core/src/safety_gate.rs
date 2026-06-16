@@ -102,6 +102,10 @@ impl<'a> ToolSafetyGate<'a> {
     }
 
     pub(crate) fn check_skill_restrictions(&self, tool_name: &str) -> Option<ToolGateDecision> {
+        if !self.config.enforce_active_skill_tool_restrictions {
+            return None;
+        }
+
         let registry = self.config.skill_registry.as_ref()?;
         let restricting_skills = registry.global_tool_restricting_skills();
         if restricting_skills.is_empty() {
@@ -198,7 +202,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn skill_restriction_denies_before_permission_allow() {
+    async fn active_skill_restriction_is_ignored_by_default_before_permission_allow() {
         let config = AgentConfig {
             skill_registry: Some(restricted_registry()),
             permission_checker: Some(Arc::new(StaticPermission(PermissionDecision::Allow))),
@@ -216,8 +220,60 @@ mod tests {
 
         assert!(matches!(
             decision,
+            ToolGateDecision::Execute {
+                reason: ToolGateApproval::PermissionAllow,
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn active_skill_restriction_denies_when_legacy_mode_is_enabled() {
+        let config = AgentConfig {
+            skill_registry: Some(restricted_registry()),
+            enforce_active_skill_tool_restrictions: true,
+            permission_checker: Some(Arc::new(StaticPermission(PermissionDecision::Allow))),
+            ..Default::default()
+        };
+        let gate = ToolSafetyGate::new(&config);
+
+        let decision = gate
+            .decide(ToolGateInput {
+                tool_name: "write",
+                args: &json!({"file_path": "x"}),
+                pre_tool_block: None,
+            })
+            .await;
+
+        assert!(matches!(
+            decision,
             ToolGateDecision::Deny {
                 reason: ToolGateDenial::SkillRestriction,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn ignored_active_skill_restriction_still_allows_permission_deny() {
+        let config = AgentConfig {
+            skill_registry: Some(restricted_registry()),
+            permission_checker: Some(Arc::new(StaticPermission(PermissionDecision::Deny))),
+            ..Default::default()
+        };
+        let gate = ToolSafetyGate::new(&config);
+
+        let decision = gate
+            .decide(ToolGateInput {
+                tool_name: "write",
+                args: &json!({"file_path": "x"}),
+                pre_tool_block: None,
+            })
+            .await;
+
+        assert!(matches!(
+            decision,
+            ToolGateDecision::Deny {
+                reason: ToolGateDenial::PermissionDeny,
                 ..
             }
         ));

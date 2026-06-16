@@ -24,6 +24,7 @@ fn create_test_session_data() -> SessionData {
             queue_config: None,
             confirmation_policy: None,
             permission_policy: None,
+            enforce_active_skill_tool_restrictions: false,
             max_parallel_tasks: None,
             auto_delegation: None,
             parent_id: None,
@@ -429,6 +430,7 @@ async fn test_file_store_with_policies() {
     session.config.confirmation_policy = Some(ConfirmationPolicy::enabled());
     session.config.permission_policy = Some(PermissionPolicy::new().allow("Bash(cargo:*)"));
     session.config.queue_config = Some(SessionQueueConfig::default());
+    session.config.enforce_active_skill_tool_restrictions = true;
 
     store.save(&session).await.unwrap();
 
@@ -436,6 +438,7 @@ async fn test_file_store_with_policies() {
     assert!(loaded.config.confirmation_policy.is_some());
     assert!(loaded.config.permission_policy.is_some());
     assert!(loaded.config.queue_config.is_some());
+    assert!(loaded.config.enforce_active_skill_tool_restrictions);
 }
 
 #[tokio::test]
