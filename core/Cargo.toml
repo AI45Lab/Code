@@ -102,6 +102,8 @@ uuid = { version = "1.6", features = ["v4", "serde"] }
 
 # Time handling
 chrono = { version = "0.4", features = ["serde"] }
+# Cron parsing for the `serve` schedules (gated behind the `serve` feature).
+cron = { version = "0.12", optional = true }
 rquickjs = { version = "0.11.0", features = ["futures"] }
 
 # S3-compatible workspace backend (optional, gated by `s3` feature)
@@ -137,6 +139,9 @@ s3 = [
     "dep:aws-smithy-types",
     "dep:aws-smithy-runtime-api",
 ]
+# Enable the durable serve layer: cron schedules + (later) channels + serve daemon
+# for filesystem-first agents. Library-only embedders pay nothing without it.
+serve = ["dep:cron"]
 
 [dev-dependencies]
 # AHP for integration tests

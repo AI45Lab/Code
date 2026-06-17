@@ -107,6 +107,8 @@ pub mod run;
 pub(crate) mod safety_gate;
 pub mod sandbox;
 pub mod security;
+#[cfg(feature = "serve")]
+pub mod serve;
 pub(crate) mod session_lane_queue;
 pub mod skills;
 pub mod store;
