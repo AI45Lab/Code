@@ -10,6 +10,8 @@
 //! (context, tool visibility, safety gate, verification) via `AgentSession::send`,
 //! never a raw model call.
 
+pub mod daemon;
 pub mod schedule;
 
+pub use daemon::serve_agent_dir;
 pub use schedule::{ScheduleSink, ScheduledJob, Scheduler};
