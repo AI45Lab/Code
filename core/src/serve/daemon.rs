@@ -70,6 +70,10 @@ pub async fn serve_agent_dir(
             opts.session_id = Some(format!("schedule:{}", spec.name));
         }
         let session = agent.session(workspace.clone(), Some(opts))?;
+        // Install the agent dir's tools/ (e.g. MCP servers) into each schedule
+        // session, so a scheduled turn can call them. Connection is fallible and
+        // surfaces here (fail at startup, not at first call).
+        super::tools::install_agent_dir_tools(&session, &agent_dir.tools).await?;
         sessions.insert(spec.name.clone(), Arc::new(session));
     }
 
@@ -106,6 +110,7 @@ providers "anthropic" {
             },
             schedules,
             channels: vec![],
+            tools: vec![],
         }
     }
 

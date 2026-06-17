@@ -12,7 +12,9 @@
 //! ├── skills/            (optional)  *.md skills, appended to CodeConfig.skill_dirs.
 //! ├── schedules/         (optional)  *.md cron jobs (YAML frontmatter `cron:` + body=prompt).
 //! ├── channels/          (optional)  *.{md,acl} inbound adapters — parsed here, served later.
-//! └── tools/             (optional)  reserved → MCP / sandboxed declarative tools.
+//! └── tools/             (optional)  *.md tool specs (`kind: mcp`) → MCP servers
+//! │                                 registered into the session (sandboxed-script
+//! │                                 `kind` is the next increment).
 //! ```
 //!
 //! [`AgentDir::load`] SYNTHESIZES existing config objects rather than adding a new
@@ -24,6 +26,7 @@ use std::path::{Path, PathBuf};
 
 use crate::config::CodeConfig;
 use crate::error::{CodeError, Result};
+use crate::mcp::McpServerConfig;
 use crate::prompts::SystemPromptSlots;
 
 /// A cron-triggered recurring turn, parsed from `schedules/<name>.md`.
@@ -54,6 +57,36 @@ pub struct ChannelSpec {
     pub frontmatter: String,
 }
 
+/// A tool definition parsed from `tools/<name>.md`, dispatched by `kind`.
+///
+/// Tool *definition* may come from the directory, but visibility and safety stay
+/// harness-owned (the deliberate divergence from eve): an `mcp` spec is registered
+/// through the normal [`add_mcp_server`](crate::AgentSession) path, so its tools
+/// are namespaced `mcp__<server>__<tool>` and gated by the session's permission
+/// policy like any other tool.
+#[derive(Debug, Clone)]
+pub enum ToolSpec {
+    /// `kind = "mcp"` → an MCP server connected into the session, contributing its
+    /// `list_tools()` as `mcp__<name>__*` tools.
+    Mcp(McpServerConfig),
+}
+
+impl ToolSpec {
+    /// The tool/server name (registry key; unique within `tools/`).
+    pub fn name(&self) -> &str {
+        match self {
+            ToolSpec::Mcp(cfg) => &cfg.name,
+        }
+    }
+
+    /// The spec kind discriminant (currently only `mcp`).
+    pub fn kind(&self) -> &str {
+        match self {
+            ToolSpec::Mcp(_) => "mcp",
+        }
+    }
+}
+
 /// A loaded agent directory: synthesized [`CodeConfig`] + prompt slots + parsed
 /// schedule/channel specs. Build a session from `config` + `prompt_slots`.
 ///
@@ -68,6 +101,7 @@ pub struct AgentDir {
     pub prompt_slots: SystemPromptSlots,
     pub schedules: Vec<ScheduleSpec>,
     pub channels: Vec<ChannelSpec>,
+    pub tools: Vec<ToolSpec>,
 }
 
 impl AgentDir {
@@ -110,6 +144,7 @@ impl AgentDir {
 
         let schedules = load_schedules(&dir.join("schedules"))?;
         let channels = load_channels(&dir.join("channels"))?;
+        let tools = load_tools(&dir.join("tools"))?;
 
         Ok(Self {
             dir,
@@ -117,6 +152,7 @@ impl AgentDir {
             prompt_slots,
             schedules,
             channels,
+            tools,
         })
     }
 }
@@ -190,6 +226,53 @@ fn load_channels(dir: &Path) -> Result<Vec<ChannelSpec>> {
     Ok(out)
 }
 
+fn load_tools(dir: &Path) -> Result<Vec<ToolSpec>> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for path in md_files(dir, &["md"])? {
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| CodeError::Context(format!("read {}: {e}", path.display())))?;
+        let (front, _body) = split_frontmatter(&content);
+        let front = front.ok_or_else(|| {
+            CodeError::Context(format!(
+                "tool {} has no YAML frontmatter (need `kind:`)",
+                path.display()
+            ))
+        })?;
+        let meta: ToolFront = serde_yaml::from_str(&front)
+            .map_err(|e| CodeError::Context(format!("tool {} frontmatter: {e}", path.display())))?;
+        let spec = match meta.kind.as_str() {
+            "mcp" => {
+                // The frontmatter's flat fields (transport/command/args/url/…) plus
+                // `name` deserialize straight into McpServerConfig; the `kind` key is
+                // ignored by its lenient Deserialize.
+                let cfg: McpServerConfig = serde_yaml::from_str(&front).map_err(|e| {
+                    CodeError::Context(format!(
+                        "tool {} (kind=mcp) is not a valid MCP server config: {e}",
+                        path.display()
+                    ))
+                })?;
+                ToolSpec::Mcp(cfg)
+            }
+            other => {
+                return Err(CodeError::Context(format!(
+                    "tool {} has unsupported kind `{other}` (supported: `mcp`)",
+                    path.display()
+                )));
+            }
+        };
+        if !seen.insert(spec.name().to_string()) {
+            return Err(CodeError::Context(format!(
+                "duplicate tool name `{}` in {}",
+                spec.name(),
+                path.display()
+            )));
+        }
+        out.push(spec);
+    }
+    Ok(out)
+}
+
 fn file_stem(path: &Path) -> String {
     path.file_stem()
         .and_then(|s| s.to_str())
@@ -233,6 +316,11 @@ struct ChannelFront {
     name: Option<String>,
 }
 
+#[derive(serde::Deserialize)]
+struct ToolFront {
+    kind: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,6 +332,7 @@ mod tests {
         std::fs::create_dir_all(base.join("skills")).unwrap();
         std::fs::create_dir_all(base.join("schedules")).unwrap();
         std::fs::create_dir_all(base.join("channels")).unwrap();
+        std::fs::create_dir_all(base.join("tools")).unwrap();
         std::fs::write(
             base.join("instructions.md"),
             "You are a release-notes agent. Be terse and accurate.",
@@ -262,6 +351,11 @@ mod tests {
         std::fs::write(
             base.join("channels/web.md"),
             "---\nkind: http\nport: 8787\n---\nInbound HTTP channel.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            base.join("tools/github.md"),
+            "---\nkind: mcp\nname: github\ntransport: stdio\ncommand: echo\nargs: [\"hi\"]\n---\nGitHub MCP tools.\n",
         )
         .unwrap();
         base
@@ -297,7 +391,38 @@ mod tests {
         assert_eq!(agent.channels.len(), 1);
         assert_eq!(agent.channels[0].kind, "http");
 
+        // tools/*.md (kind=mcp) → parsed MCP server spec.
+        assert_eq!(agent.tools.len(), 1);
+        assert_eq!(agent.tools[0].kind(), "mcp");
+        assert_eq!(agent.tools[0].name(), "github");
+
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unknown_tool_kind_is_an_error() {
+        let base =
+            std::env::temp_dir().join(format!("a3s-agentdir-toolkind-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("tools")).unwrap();
+        std::fs::write(base.join("instructions.md"), "role").unwrap();
+        std::fs::write(base.join("tools/x.md"), "---\nkind: wat\nname: x\n---\n").unwrap();
+        assert!(AgentDir::load(&base).is_err());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn duplicate_tool_name_is_an_error() {
+        let base =
+            std::env::temp_dir().join(format!("a3s-agentdir-tooldup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("tools")).unwrap();
+        std::fs::write(base.join("instructions.md"), "role").unwrap();
+        let spec = "---\nkind: mcp\nname: dup\ntransport: stdio\ncommand: echo\n---\n";
+        std::fs::write(base.join("tools/a.md"), spec).unwrap();
+        std::fs::write(base.join("tools/b.md"), spec).unwrap();
+        assert!(AgentDir::load(&base).is_err());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

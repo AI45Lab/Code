@@ -12,6 +12,8 @@
 
 pub mod daemon;
 pub mod schedule;
+pub mod tools;
 
 pub use daemon::serve_agent_dir;
 pub use schedule::{ScheduleSink, ScheduledJob, Scheduler};
+pub use tools::install_agent_dir_tools;

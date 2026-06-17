@@ -17,7 +17,7 @@ mod search;
 #[cfg(test)]
 mod tests;
 
-pub use agent_dir::{AgentDir, ChannelSpec, ScheduleSpec};
+pub use agent_dir::{AgentDir, ChannelSpec, ScheduleSpec, ToolSpec};
 pub use provider::{ModelConfig, ModelCost, ModelLimit, ModelModalities, ProviderConfig};
 pub use search::{
     BrowserBackend, DocumentCacheConfig, DocumentOcrConfig, DocumentParserConfig, HeadlessConfig,
