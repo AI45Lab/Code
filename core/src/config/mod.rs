@@ -10,12 +10,14 @@
 //! Existing `.acl` config filenames are still accepted for compatibility.
 //! JSON support has been removed.
 
+pub mod agent_dir;
 mod loader;
 mod provider;
 mod search;
 #[cfg(test)]
 mod tests;
 
+pub use agent_dir::{AgentDir, ChannelSpec, ScheduleSpec};
 pub use provider::{ModelConfig, ModelCost, ModelLimit, ModelModalities, ProviderConfig};
 pub use search::{
     BrowserBackend, DocumentCacheConfig, DocumentOcrConfig, DocumentParserConfig, HeadlessConfig,
