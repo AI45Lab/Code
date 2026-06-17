@@ -80,6 +80,8 @@ use a3s_code_core::verification::{
     VerificationCommand as RustVerificationCommand, VerificationReport as RustVerificationReport,
     VerificationStatus as RustVerificationStatus, VerificationSummary as RustVerificationSummary,
 };
+use a3s_code_core::config::AgentDir as RustAgentDir;
+use a3s_code_core::serve::serve_agent_dir as rust_serve_agent_dir;
 use a3s_code_core::{
     Agent as RustAgent, AgentEvent as RustAgentEvent, AgentResult as RustAgentResult,
     AgentSession as RustAgentSession, PlanningMode as RustPlanningMode,
@@ -87,6 +89,7 @@ use a3s_code_core::{
 };
 use napi::Either;
 use napi::Env;
+use tokio_util::sync::CancellationToken;
 
 // AHP Type Bindings
 mod ahp_types;
@@ -2998,6 +3001,95 @@ impl Agent {
         self.inner
             .disconnect_idle_mcp(idle_threshold_ms.max(0) as u64)
             .await
+    }
+
+    /// Serve a filesystem-first agent directory's cron schedules until stopped.
+    ///
+    /// Loads the directory by convention (`instructions.md` required, optional
+    /// `agent.acl`, `skills/`, `schedules/*.md`) and starts one durable session
+    /// per enabled schedule (stable id `schedule:<name>`). Each schedule fires as
+    /// a FULL harness turn (context, tool visibility, safety gate, verification),
+    /// never a raw model call.
+    ///
+    /// Returns immediately with a {@link ServeHandle}; the daemon runs in the
+    /// background until `handle.stop()` is called. The handle MUST be kept and
+    /// stopped explicitly — dropping it does NOT cancel the daemon.
+    ///
+    /// ```js
+    /// const handle = await agent.serveAgentDir('./my-agent', '/my-project');
+    /// // ... later ...
+    /// await handle.stop();
+    /// ```
+    ///
+    /// @param dir - Path to the agent directory to serve (defines schedules/skills/prompt)
+    /// @param workspace - Workspace directory each scheduled turn operates in
+    /// @param options - Optional session overrides merged into every schedule session
+    ///   (model, llmClient, sessionStore, …); `promptSlots`/`sessionId` set here are
+    ///   NOT overridden so a host can pin them per schedule
+    #[napi]
+    pub async fn serve_agent_dir(
+        &self,
+        dir: String,
+        workspace: String,
+        options: Option<SessionOptions>,
+    ) -> napi::Result<ServeHandle> {
+        let agent_dir = RustAgentDir::load(&dir)
+            .map_err(|e| napi::Error::from_reason(format!("Failed to load agent dir: {e}")))?;
+        let extra = js_session_options_to_rust(options)?;
+
+        // The daemon runs until cancelled; spawn it so control returns to JS
+        // immediately and the event loop is not blocked. The token, owned by the
+        // returned ServeHandle, drives graceful shutdown.
+        let cancel = CancellationToken::new();
+        let agent = self.inner.clone();
+        let handle_token = cancel.clone();
+
+        get_runtime().spawn(async move {
+            // Spawned task bodies are NOT panic-safe (a panic here is swallowed,
+            // never surfaced). `serve_agent_dir` returns Result and never panics
+            // by construction; a scheduling error is reported, not propagated.
+            if let Err(e) =
+                rust_serve_agent_dir(&agent, &agent_dir, workspace, Some(extra), cancel).await
+            {
+                eprintln!("a3s-code: serve_agent_dir daemon exited with error: {e}");
+            }
+        });
+
+        Ok(ServeHandle {
+            cancel: handle_token,
+        })
+    }
+}
+
+// ============================================================================
+// ServeHandle
+// ============================================================================
+
+/// Lifetime handle for a running serve daemon (see {@link Agent.serveAgentDir}).
+///
+/// The daemon keeps running until `stop()` is called. Dropping the handle does
+/// NOT cancel the daemon — call `stop()` explicitly for graceful shutdown.
+#[napi]
+pub struct ServeHandle {
+    cancel: CancellationToken,
+}
+
+#[napi]
+impl ServeHandle {
+    /// Request graceful shutdown of the serve daemon.
+    ///
+    /// Signals every per-schedule job to stop after its current fire. Idempotent:
+    /// calling `stop()` more than once is a no-op. Resolves once the cancellation
+    /// has been signalled.
+    #[napi]
+    pub async fn stop(&self) {
+        self.cancel.cancel();
+    }
+
+    /// Whether `stop()` has been called on this handle.
+    #[napi]
+    pub fn is_stopped(&self) -> bool {
+        self.cancel.is_cancelled()
     }
 }
 

@@ -89,6 +89,10 @@ use std::sync::{
 };
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
+
+use a3s_code_core::config::AgentDir as RustAgentDir;
+use a3s_code_core::serve::serve_agent_dir as rust_serve_agent_dir;
 
 // ============================================================================
 // Utilities
@@ -1017,6 +1021,28 @@ impl PyEventStream {
 // Agent
 // ============================================================================
 
+/// Lifetime handle for a running serve daemon (see `Agent.serve_agent_dir`).
+///
+/// The daemon keeps running until `stop()` is called. Dropping the handle does
+/// NOT cancel the daemon — call `stop()` explicitly for graceful shutdown.
+#[pyclass(name = "ServeHandle")]
+struct PyServeHandle {
+    cancel: CancellationToken,
+}
+
+#[pymethods]
+impl PyServeHandle {
+    /// Request graceful shutdown of the serve daemon. Idempotent.
+    fn stop(&self) {
+        self.cancel.cancel();
+    }
+
+    /// Whether `stop()` has been called on this handle.
+    fn is_stopped(&self) -> bool {
+        self.cancel.is_cancelled()
+    }
+}
+
 /// AI coding agent. Create with `Agent.create()`, then call `agent.session()`.
 #[pyclass(name = "Agent")]
 struct PyAgent {
@@ -1040,6 +1066,59 @@ impl PyAgent {
 
         Ok(Self {
             inner: Arc::new(agent),
+        })
+    }
+
+    /// Serve a filesystem-first agent directory's cron schedules until stopped.
+    ///
+    /// Loads the directory by convention (`instructions.md` required, optional
+    /// `agent.acl`, `skills/`, `schedules/*.md`) and starts one durable session
+    /// per enabled schedule (stable id `schedule:<name>`). Each schedule fires as
+    /// a FULL harness turn (context, tool visibility, safety gate, verification),
+    /// never a raw model call.
+    ///
+    /// Returns immediately with a `ServeHandle`; the daemon runs in the
+    /// background until `handle.stop()` is called. Dropping the handle does NOT
+    /// cancel the daemon.
+    ///
+    /// Args:
+    ///     dir: Path to the agent directory to serve (schedules/skills/prompt)
+    ///     workspace: Workspace directory each scheduled turn operates in
+    ///     options: Optional SessionOptions merged into every schedule session
+    #[pyo3(signature = (dir, workspace, options=None))]
+    fn serve_agent_dir(
+        &self,
+        dir: String,
+        workspace: String,
+        options: Option<PySessionOptions>,
+    ) -> PyResult<PyServeHandle> {
+        let agent_dir = RustAgentDir::load(&dir)
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to load agent dir: {e}")))?;
+        let extra = match options {
+            Some(o) => Some(build_rust_session_options(o)?),
+            None => None,
+        };
+
+        // The daemon runs until cancelled; spawn it on the shared runtime so the
+        // call returns to Python immediately. The token, owned by the returned
+        // ServeHandle, drives graceful shutdown.
+        let cancel = CancellationToken::new();
+        let agent = self.inner.clone();
+        let handle_token = cancel.clone();
+
+        get_runtime().spawn(async move {
+            // serve_agent_dir returns Result and never panics by construction; a
+            // scheduling error is reported, not propagated (spawned task bodies
+            // are not panic-safe).
+            if let Err(e) =
+                rust_serve_agent_dir(&agent, &agent_dir, workspace, extra, cancel).await
+            {
+                eprintln!("a3s-code: serve_agent_dir daemon exited with error: {e}");
+            }
+        });
+
+        Ok(PyServeHandle {
+            cancel: handle_token,
         })
     }
 
@@ -6776,6 +6855,7 @@ fn a3s_code_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyAgentDefinition>()?;
     m.add_class::<PyAutoDelegationConfig>()?;
     m.add_class::<PySessionOptions>()?;
+    m.add_class::<PyServeHandle>()?;
     m.add_class::<PySessionQueueConfig>()?;
     m.add_class::<PySearchConfig>()?;
     m.add_class::<PySearchEngineConfig>()?;
