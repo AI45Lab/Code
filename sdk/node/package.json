@@ -38,7 +38,7 @@
     "build": "napi build --platform --release --js index.js --dts generated.d.ts",
     "build:debug": "napi build --platform --js index.js --dts generated.d.ts",
     "prepublishOnly": "napi prepublish -t npm",
-    "test": "node test.mjs",
+    "test": "node test.mjs && node test_serve.mjs",
     "test:types": "tsc --noEmit --module nodenext --moduleResolution nodenext --target es2022 --strict --skipLibCheck test-types.ts",
     "test:helpers": "node test-helpers.mjs"
   },

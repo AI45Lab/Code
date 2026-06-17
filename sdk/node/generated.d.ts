@@ -1234,6 +1234,50 @@ export declare class Agent {
    * deployments.
    */
   disconnectIdleMcp(idleThresholdMs: number): Promise<Array<string>>
+  /**
+   * Serve a filesystem-first agent directory's cron schedules until stopped.
+   *
+   * Loads the directory by convention (`instructions.md` required, optional
+   * `agent.acl`, `skills/`, `schedules/*.md`) and starts one durable session
+   * per enabled schedule (stable id `schedule:<name>`). Each schedule fires as
+   * a FULL harness turn (context, tool visibility, safety gate, verification),
+   * never a raw model call.
+   *
+   * Returns immediately with a {@link ServeHandle}; the daemon runs in the
+   * background until `handle.stop()` is called. The handle MUST be kept and
+   * stopped explicitly — dropping it does NOT cancel the daemon.
+   *
+   * ```js
+   * const handle = await agent.serveAgentDir('./my-agent', '/my-project');
+   * // ... later ...
+   * await handle.stop();
+   * ```
+   *
+   * @param dir - Path to the agent directory to serve (defines schedules/skills/prompt)
+   * @param workspace - Workspace directory each scheduled turn operates in
+   * @param options - Optional session overrides merged into every schedule session
+   *   (model, llmClient, sessionStore, …); `promptSlots`/`sessionId` set here are
+   *   NOT overridden so a host can pin them per schedule
+   */
+  serveAgentDir(dir: string, workspace: string, options?: SessionOptions | undefined | null): Promise<ServeHandle>
+}
+/**
+ * Lifetime handle for a running serve daemon (see {@link Agent.serveAgentDir}).
+ *
+ * The daemon keeps running until `stop()` is called. Dropping the handle does
+ * NOT cancel the daemon — call `stop()` explicitly for graceful shutdown.
+ */
+export declare class ServeHandle {
+  /**
+   * Request graceful shutdown of the serve daemon.
+   *
+   * Signals every per-schedule job to stop after its current fire. Idempotent:
+   * calling `stop()` more than once is a no-op. Resolves once the cancellation
+   * has been signalled.
+   */
+  stop(): Promise<void>
+  /** Whether `stop()` has been called on this handle. */
+  isStopped(): boolean
 }
 /** Workspace-bound session. All LLM and tool operations happen here. */
 export declare class Session {

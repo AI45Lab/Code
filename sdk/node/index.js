@@ -310,7 +310,7 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { formatVerificationSummary, EventStream, FileMemoryStore, FileSessionStore, MemorySessionStore, DefaultSecurityProvider, LocalWorkspaceBackend, S3WorkspaceBackend, StdioTransport, HttpTransport, WebSocketTransport, UnixSocketTransport, Agent, Session, builtinSkills, BrowserBackend } = nativeBinding
+const { formatVerificationSummary, EventStream, FileMemoryStore, FileSessionStore, MemorySessionStore, DefaultSecurityProvider, LocalWorkspaceBackend, S3WorkspaceBackend, StdioTransport, HttpTransport, WebSocketTransport, UnixSocketTransport, Agent, ServeHandle, Session, builtinSkills, BrowserBackend } = nativeBinding
 
 module.exports.formatVerificationSummary = formatVerificationSummary
 module.exports.EventStream = EventStream
@@ -325,6 +325,7 @@ module.exports.HttpTransport = HttpTransport
 module.exports.WebSocketTransport = WebSocketTransport
 module.exports.UnixSocketTransport = UnixSocketTransport
 module.exports.Agent = Agent
+module.exports.ServeHandle = ServeHandle
 module.exports.Session = Session
 module.exports.builtinSkills = builtinSkills
 module.exports.BrowserBackend = BrowserBackend
