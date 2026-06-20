@@ -1593,6 +1593,59 @@ await session.addMcp({
 
 ---
 
+## Filesystem-First Agents
+
+A durable agent can be defined entirely by a **directory** — no code — and run by
+the built-in `serve` daemon. One folder holds the agent's role, config, skills,
+cron schedules, and tools:
+
+```text
+my-agent/
+├── instructions.md   (required)  Role/guidelines — injected as a prompt SLOT.
+├── agent.acl         (optional)  Model, providers, queue.
+├── skills/           (optional)  *.md skills.
+├── schedules/        (optional)  *.md cron jobs (frontmatter `cron:` + body prompt).
+└── tools/            (optional)  *.md tools: `kind: mcp` (MCP server) or
+                                  `kind: script` (sandboxed QuickJS over `program`).
+```
+
+`AgentDir::load` synthesizes the existing config objects from that folder — it adds
+no new runtime or prompt system. `serve_agent_dir` then runs each enabled schedule
+on its own durable session, and every fire is a FULL harness turn (context, tool
+visibility, safety gate, verification), never a raw model call. `instructions.md`
+is a prompt *slot*, so the harness keeps `BOUNDARIES`, the response contract, and
+verification authoritative.
+
+```rust
+use a3s_code_core::{Agent, config::AgentDir, serve::serve_agent_dir};
+use tokio_util::sync::CancellationToken;
+
+let agent_dir = AgentDir::load("./my-agent")?;
+let agent = Agent::from_config(agent_dir.config.clone()).await?;
+serve_agent_dir(&agent, &agent_dir, "./workspace", None, CancellationToken::new()).await?;
+```
+
+From the SDKs:
+
+```js
+const handle = await agent.serveAgentDir('./my-agent', './workspace')
+// ... runs in the background until:
+await handle.stop()
+```
+
+- **`tools/`** — `kind: mcp` registers an MCP server (namespaced
+  `mcp__<server>__<tool>`); `kind: script` exposes a sandboxed QuickJS tool over the
+  `program` path, with a fail-closed `allowed_tools` allow-list (an omitted list
+  grants no tools).
+- **Rehydrate-on-boot** — pass a `SessionStore` and each schedule session resumes
+  its accumulated context across daemon restarts (history is restored; the current
+  `instructions.md` / `skills/` / `tools/` are re-applied each boot).
+- Gated behind the `serve` Cargo feature; library-only embedders pay nothing.
+
+See [Filesystem-First Agents](https://a3s-lab.github.io/a3s/docs/code/agent-dir) for the full guide.
+
+---
+
 ## Slash Commands
 
 Sessions support slash commands:
@@ -1683,6 +1736,7 @@ Full reference and guides: [a3s-lab.github.io/a3s/docs/code](https://a3s-lab.git
 - [Tools & Structured Output](https://a3s-lab.github.io/a3s/docs/code/tools)
 - [AHP Protocol](https://a3s-lab.github.io/a3s/docs/code/ahp-integration)
 - [Skills](https://a3s-lab.github.io/a3s/docs/code/skills)
+- [Filesystem-First Agents](https://a3s-lab.github.io/a3s/docs/code/agent-dir)
 - [Memory](https://a3s-lab.github.io/a3s/docs/code/memory)
 - [Security](https://a3s-lab.github.io/a3s/docs/code/security)
 - [Hooks](https://a3s-lab.github.io/a3s/docs/code/hooks)

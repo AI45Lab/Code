@@ -320,6 +320,25 @@ console.log(await session.mcps())
 The positional `addMcpServer(...)` overload and longer
 `addMcpServerConfig(...)` alias remain for compatibility.
 
+## Filesystem-First Agents
+
+Define a durable agent as a **directory** — `instructions.md` (required) plus
+optional `agent.acl`, `skills/`, `schedules/` (cron), and `tools/` (`kind: mcp` or
+`kind: script` sandboxed QuickJS) — and serve its schedules. Each fire is a full
+harness turn (context, tool visibility, safety gate, verification). Returns a
+handle you must keep and stop explicitly.
+
+```js
+const handle = await agent.serveAgentDir('./my-agent', './workspace', {
+  // Optional: pass a sessionStore so each schedule resumes its accumulated
+  // context across daemon restarts.
+  sessionStore: new FileSessionStore('./sessions'),
+})
+// ... runs in the background until:
+await handle.stop()
+console.log(handle.isStopped()) // true
+```
+
 ## HITL Confirmations
 
 Use `permissionPolicy` to decide which tools ask, then `confirmationPolicy` to

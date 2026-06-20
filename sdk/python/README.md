@@ -311,6 +311,26 @@ or `session.tool("task", {...})` when you need raw access.
 The old standalone lifecycle control-plane API is intentionally removed from
 the 2.0 SDK surface.
 
+## Filesystem-First Agents
+
+Define a durable agent as a **directory** — `instructions.md` (required) plus
+optional `agent.acl`, `skills/`, `schedules/` (cron), and `tools/` (`kind: mcp` or
+`kind: script` sandboxed QuickJS) — and serve its schedules. Each fire is a full
+harness turn (context, tool visibility, safety gate, verification). Returns a
+handle you keep and stop explicitly.
+
+```python
+opts = SessionOptions()
+# Optional: pass a session_store so each schedule resumes its accumulated
+# context across daemon restarts.
+opts.session_store = FileSessionStore("./sessions")
+
+handle = agent.serve_agent_dir("./my-agent", "./workspace", opts)
+# ... runs in the background until:
+handle.stop()
+print(handle.is_stopped())  # True
+```
+
 ## License
 
 MIT

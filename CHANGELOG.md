@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [4.0.0] - 2026-06-21
 
-Milestone release: **filesystem-first agents** ("eve parity"). A single directory
+Milestone release: **filesystem-first agents**. A single directory
 now defines a durable agent by convention — `instructions.md` (role slot),
 `agent.acl` (config), `skills/`, `schedules/` (cron), and `tools/` — served by a
 `serve` daemon that runs each schedule as a full harness turn. No breaking changes

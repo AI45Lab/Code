@@ -6,7 +6,7 @@ The loader (`load_tools` in `core/src/config/agent_dir.rs`) parses both into
 session build — MCP via `add_mcp_server`, script via the new
 `AgentDirScriptTool` (`core/src/tools/agent_dir_script_tool.rs`), a thin facade
 over the existing `program` QuickJS path. Scope: how the optional `tools/`
-subdirectory of an eve-style agent directory becomes *executable* tools in
+subdirectory of a filesystem-first agent directory becomes *executable* tools in
 A3S Code without ever running arbitrary host JavaScript or arbitrary host
 processes.
 
@@ -15,7 +15,7 @@ processes.
 > NEVER turned into a free-running host JS/native process, and it NEVER gets to
 > define its own tool-visibility or safety policy. Tool *definition* is allowed
 > from the directory; tool *visibility* and *safety* remain harness-owned. This
-> is the deliberate divergence from eve's user-defined-tools model, documented in
+> is the deliberate divergence from user-defined-tools models, documented in
 > the `core/src/config/agent_dir.rs` module header, and is why the directory
 > selects between two harness-owned backends rather than running arbitrary code.
 

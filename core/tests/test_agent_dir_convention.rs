@@ -1,4 +1,4 @@
-//! End-to-end integration test for the eve-style filesystem-first agent directory
+//! End-to-end integration test for the filesystem-first agent directory
 //! convention: a single on-disk directory with EVERY supported sub-convention
 //! (instructions, agent.acl, skills/, schedules/, tools/) loads into a
 //! fully-populated [`AgentDir`]. Hermetic — no provider, no network.

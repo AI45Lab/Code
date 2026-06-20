@@ -1,4 +1,4 @@
-//! Filesystem-first agent directory convention (eve-style, harness-respecting).
+//! Filesystem-first agent directory convention (harness-respecting).
 //!
 //! A single directory defines a durable agent by convention:
 //!
@@ -19,7 +19,7 @@
 //! [`AgentDir::load`] SYNTHESIZES existing config objects rather than adding a new
 //! runtime: `instructions.md` → [`SystemPromptSlots`], `agent.acl` → [`CodeConfig`],
 //! `skills/` → `skill_dirs`. Tool definition, visibility, and safety stay
-//! harness-owned (the deliberate divergence from eve's user-defined-tools model).
+//! harness-owned (the deliberate divergence from user-defined-tools models).
 
 use std::path::{Path, PathBuf};
 
@@ -44,7 +44,7 @@ pub struct ScheduleSpec {
 /// A tool definition parsed from `tools/<name>.md`, dispatched by `kind`.
 ///
 /// Tool *definition* may come from the directory, but visibility and safety stay
-/// harness-owned (the deliberate divergence from eve): an `mcp` spec is registered
+/// harness-owned (a deliberate divergence from user-defined-tools models): an `mcp` spec is registered
 /// through the normal [`add_mcp_server`](crate::AgentSession) path, so its tools
 /// are namespaced `mcp__<server>__<tool>` and gated by the session's permission
 /// policy like any other tool.
@@ -121,7 +121,7 @@ pub struct ScriptToolLimits {
 ///
 /// Distinct from [`CodeConfig::agent_dirs`](crate::config::CodeConfig) /
 /// `register_agent_dir`, which scan a directory for **worker/subagent**
-/// definitions. An `AgentDir` is the eve-style *primary* agent — the directory
+/// definitions. An `AgentDir` is the filesystem-first *primary* agent — the directory
 /// that defines this agent's prompt, skills, schedules, and tools.
 #[derive(Debug, Clone)]
 pub struct AgentDir {
