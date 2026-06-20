@@ -1,6 +1,6 @@
 [package]
 name = "a3s-code-core"
-version = "3.6.2"
+version = "4.0.0"
 edition = "2021"
 authors = ["A3S Lab Team"]
 license = "MIT"
@@ -139,8 +139,8 @@ s3 = [
     "dep:aws-smithy-types",
     "dep:aws-smithy-runtime-api",
 ]
-# Enable the durable serve layer: cron schedules + (later) channels + serve daemon
-# for filesystem-first agents. Library-only embedders pay nothing without it.
+# Enable the durable serve layer: cron schedules + serve daemon for
+# filesystem-first agents. Library-only embedders pay nothing without it.
 serve = ["dep:cron"]
 
 [dev-dependencies]

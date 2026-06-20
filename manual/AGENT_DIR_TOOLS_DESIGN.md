@@ -1,6 +1,11 @@
 # Agent-Dir `tools/` Mapping — Design Doc
 
-Status: DESIGN ONLY (no implementation). Scope: how the optional `tools/`
+Status: IMPLEMENTED. Both backends ship: `kind = "mcp"` and `kind = "script"`.
+The loader (`load_tools` in `core/src/config/agent_dir.rs`) parses both into
+`ToolSpec::{Mcp, Script}`; `serve::install_agent_dir_tools` registers them at
+session build — MCP via `add_mcp_server`, script via the new
+`AgentDirScriptTool` (`core/src/tools/agent_dir_script_tool.rs`), a thin facade
+over the existing `program` QuickJS path. Scope: how the optional `tools/`
 subdirectory of an eve-style agent directory becomes *executable* tools in
 A3S Code without ever running arbitrary host JavaScript or arbitrary host
 processes.
@@ -10,9 +15,9 @@ processes.
 > NEVER turned into a free-running host JS/native process, and it NEVER gets to
 > define its own tool-visibility or safety policy. Tool *definition* is allowed
 > from the directory; tool *visibility* and *safety* remain harness-owned. This
-> is the deliberate divergence from eve's user-defined-tools model already
-> documented in `core/src/config/agent_dir.rs` (the module header) and is the
-> reason `tools/` is currently only a reserved placeholder (`agent_dir.rs:15`).
+> is the deliberate divergence from eve's user-defined-tools model, documented in
+> the `core/src/config/agent_dir.rs` module header, and is why the directory
+> selects between two harness-owned backends rather than running arbitrary code.
 
 ---
 
@@ -28,13 +33,12 @@ agent/
 ├── agent.acl          (optional)  → CodeConfig
 ├── skills/            (optional)  → CodeConfig.skill_dirs
 ├── schedules/         (optional)  → Vec<ScheduleSpec>   (serve layer)
-├── channels/          (optional)  → Vec<ChannelSpec>    (design-only)
-└── tools/             (optional)  → reserved (THIS DOC)
+└── tools/             (optional)  → Vec<ToolSpec>        (load_tools, THIS DOC)
 ```
 
-`tools/` is parsed by NOTHING today — line 15 of `agent_dir.rs` is a comment
-only, and `AgentDir::load` does not walk the subdirectory. Two runtime seams
-already exist that this design reuses verbatim; we are wiring, not inventing:
+`tools/` is parsed by `load_tools` into `AgentDir::tools` and installed at session
+build time. Two runtime seams already exist that this design reuses verbatim; we
+wired, we did not invent:
 
 1. MCP registration — `AgentSession::add_mcp_server(McpServerConfig)`
    (`core/src/agent_api.rs:1305`) → `SessionExtensionRuntime::add_mcp_server`
@@ -61,20 +65,15 @@ backends to instantiate and with what bounded parameters.
 
 Each entry is a single declarative file. We do NOT use a `.js` file as the
 manifest (a bare `.js` is ambiguous — is it the program source or a config?),
-and we do NOT execute the manifest. Two accepted forms, chosen to match the rest
-of the convention and the existing config loaders:
+and we do NOT execute the manifest. The accepted form (as shipped) is:
 
-- `tools/<name>.acl` — HCL/ACL (preferred per repo Code Style: "Prefer HCL over
-  TOML"). Parsed with the same path `CodeConfig::from_file` already uses for
-  `agent.acl`.
 - `tools/<name>.md` — YAML frontmatter + body, identical mechanics to
-  `schedules/*.md` and `channels/*.{md,acl}`. Reuses `split_frontmatter`
-  (`agent_dir.rs:202`) and `md_files` (`agent_dir.rs:126`). The body, when
-  present, is treated as the tool *description* surfaced to the model.
+  `schedules/*.md`. Reuses `split_frontmatter` and `md_files` (so only `*.md`
+  files are read). The body, when present, is treated as the tool *description*
+  surfaced to the model.
 
-A `kind:` discriminant selects the backend. This mirrors `ChannelFront.kind`
-exactly (`agent_dir.rs:230`), so there is one established pattern for "a spec
-file that names which adapter handles it."
+A `kind:` discriminant selects the backend — the same "a spec file names which
+adapter handles it" pattern the schedule loader uses for its frontmatter.
 
 ```text
 kind = "mcp"        → MCP server connection  (backend 1)
@@ -92,19 +91,23 @@ The spec is a 1:1 surface over the *already-deserializable*
 hand-written `Deserialize` accepting the flat ACL form
 (`transport = "stdio" | "http" | "streamable-http"`, plus `command`/`args` or
 `url`/`headers`), `env`, `oauth`, and `tool_timeout_secs`. So the loader does
-*no new parsing*: it deserializes the file body into `McpServerConfig`.
+*no new parsing*: it deserializes the file's YAML frontmatter into
+`McpServerConfig`.
 
-```hcl
-# tools/github.acl
-kind        = "mcp"
-name        = "github"            # used for the mcp__github__* prefix
-transport   = "stdio"
-command     = "npx"
-args        = ["-y", "@modelcontextprotocol/server-github"]
-enabled     = true
+```md
+---
+# tools/github.md
+kind: mcp
+name: github                      # used for the mcp__github__* prefix
+transport: stdio
+command: npx
+args: ["-y", "@modelcontextprotocol/server-github"]
+enabled: true
 # secrets come from the process env, not the file (see Security)
-env = { GITHUB_TOKEN = "${env:GITHUB_TOKEN}" }
-tool_timeout_secs = 60
+env: { GITHUB_TOKEN: "${env:GITHUB_TOKEN}" }
+tool_timeout_secs: 60
+---
+GitHub issues and PR tools.   (← optional body = model-facing description)
 ```
 
 ### 2.3 `kind = "script"` spec → bounded `program` invocation
@@ -133,8 +136,8 @@ The source must define `async function run(ctx, inputs)` — enforced by
 
 ### 2.4 Loader output (parse, don't wire, in `AgentDir::load`)
 
-Following the `schedules`/`channels` precedent, `AgentDir::load` only *parses*
-`tools/` into typed specs and stores them on `AgentDir`. Actual registration is
+Following the `schedules` precedent, `AgentDir::load` only *parses* `tools/` into
+typed specs and stores them on `AgentDir`. Actual registration is
 done at session build time (§3), exactly as `add_mcp_server` is a session-level
 operation today. Proposed shape (names illustrative, not prescriptive):
 
@@ -154,7 +157,7 @@ pub struct ScriptToolSpec {
 ```
 
 Parsing rules (fail closed, mirroring existing loaders):
-- No frontmatter / missing `kind` → error, like `schedules`/`channels`.
+- No frontmatter / missing `kind` → error, like `schedules`.
 - `kind = "mcp"` with a malformed `McpServerConfig` → propagate the serde error.
 - `kind = "script"` whose `path` does not end `.js`/`.mjs` → error at load (do
   not defer to first call).
@@ -236,20 +239,25 @@ chokepoint is why "tool definition from the dir" cannot smuggle past
 5. Backend-internal guards remain:
    - `script`: the QuickJS VM has no fs/net/proc/env; the *only* outbound
      capability is `ctx.tool(...)`, and `execute_host_tool_json`
-     (`program_tool.rs:436`) re-checks the per-script `allowed_tools` set and
-     the `maxToolCalls` counter on every hop. Crucially, those inner `ctx` calls
-     re-enter `registry.execute_with_context`, so a script calling `bash` is
-     still a `bash` execution subject to the same boundary checks.
+     (`program_tool.rs:436`) enforces the per-script `allowed_tools` set and the
+     `maxToolCalls` counter on every hop. Note the boundary precisely: those inner
+     `ctx` calls go through `ToolRegistry::execute_with_context` directly — they
+     are NOT re-evaluated against the session `PermissionChecker`/HITL (that gate
+     runs in the agent loop for the model-selected `program`/script call, not for
+     the script's internal hops). So the **allow-list is the boundary** for what a
+     directory script may reach, and the loader fails it closed (empty by default).
    - `mcp`: A3S never runs the server's code; it exchanges JSON-RPC. The server
      is a separate process/endpoint owned by the transport layer.
 
-Net: a `tools/` file can *add a callable name*, but every actual invocation is
-double-gated (permission check + backend sandbox), and the name itself is
-non-shadowing and harness-namespaced (`mcp__…` for MCP). There is no path by
-which a directory file executes arbitrary host JS or an arbitrary host process.
+Net: a `tools/` file can *add a callable name*. The model-selected call to it is
+permission-gated like any tool, and the name is non-shadowing and
+harness-namespaced (`mcp__…` for MCP). A `script`'s inner tool calls are bounded
+by its pinned allow-list + the QuickJS sandbox rather than the permission policy.
+There is no path by which a directory file executes arbitrary host JS or an
+arbitrary host process.
 
 ```text
-tools/<name>.{acl,md}
+tools/<name>.md
    │  AgentDir::load  (parse only)
    ▼
 ToolSpec ──┬─ Mcp(McpServerConfig)  ─► session.add_mcp_server ─► McpToolWrapper (mcp__name__*)
@@ -262,12 +270,13 @@ ToolSpec ──┬─ Mcp(McpServerConfig)  ─► session.add_mcp_server ─►
                                                    │
                           MCP: JSON-RPC to server  │  script: QuickJS VM,
                                                    │  frozen ctx, allow-list,
-                                                   ▼  limits — ctx.tool re-checks
+                                                   ▼  limits — ctx.tool allow-list
+                                                      (NOT the permission policy)
 ```
 
 ---
 
-## 5. (d) Minimal trait/seam to add later
+## 5. (d) The minimal trait/seam (as built)
 
 Goal: the smallest possible new surface, reusing both existing backends. Two
 trait-free functions plus one tiny `Tool` impl. No new manager, no new sandbox,
@@ -276,9 +285,9 @@ no new permission path (Rule 2: this is an *extension*, the core is untouched).
 ### Seam 1 — parse (in `config/agent_dir.rs`, alongside `load_schedules`)
 
 ```rust
-fn load_tools(dir: &Path) -> Result<Vec<ToolSpec>>;   // mirrors load_schedules/load_channels
+fn load_tools(dir: &Path) -> Result<Vec<ToolSpec>>;   // mirrors load_schedules
 ```
-Called from `AgentDir::load` after `channels`; stores `tools: Vec<ToolSpec>` on
+Called from `AgentDir::load` after `schedules`; stores `tools: Vec<ToolSpec>` on
 `AgentDir`. Pure parsing — fail closed, no I/O beyond reading the files.
 
 ### Seam 2 — register (session build time, NOT inside `AgentDir::load`)

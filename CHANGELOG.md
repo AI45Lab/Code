@@ -5,6 +5,64 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.0] - 2026-06-21
+
+Milestone release: **filesystem-first agents** ("eve parity"). A single directory
+now defines a durable agent by convention — `instructions.md` (role slot),
+`agent.acl` (config), `skills/`, `schedules/` (cron), and `tools/` — served by a
+`serve` daemon that runs each schedule as a full harness turn. No breaking changes
+to existing APIs; the new surface is additive and gated behind the `serve` feature.
+
+### Added
+
+- **Filesystem-first agent directories (`AgentDir`) + the `serve` daemon.** A
+  directory with a required `instructions.md` (injected as a prompt *slot*, so the
+  harness keeps `BOUNDARIES`/response-format/verification authoritative) plus
+  optional `agent.acl`, `skills/`, `schedules/`, and `tools/` loads via
+  `AgentDir::load` into existing config objects — no new runtime, no new prompt
+  system. `serve_agent_dir` runs each enabled cron schedule on its own durable
+  `schedule:<name>` session; every fire is a FULL `AgentSession::send` turn
+  (context, tool visibility, safety gate, verification), never a raw model call.
+  Cron accepts 5- and 6-field expressions (UTC). Exposed in the Node and Python
+  SDKs (`serveAgentDir` / `serve_agent_dir`) returning a `ServeHandle`. Gated
+  behind the `serve` Cargo feature.
+- **`tools/` declarative tools — `kind: mcp`.** A `tools/<name>.md` with
+  `kind: mcp` registers an MCP server into each schedule session through the
+  normal `add_mcp_server` path (namespaced `mcp__<server>__<tool>`, gated by the
+  session permission policy). Duplicate names and unknown kinds fail closed at load.
+- **Rehydrate-on-boot for the serve daemon.** When a `SessionStore` is configured
+  (e.g. via `SessionOptions::with_file_session_store`), `serve_agent_dir` now
+  *resumes* any schedule whose `schedule:<name>` session already exists in the
+  store instead of starting it fresh, so a daemon restart keeps the accumulated
+  conversation context. Resume restores history only — the current
+  `instructions.md` / `skills/` / `tools/` are re-applied each boot, so editing
+  the agent dir still takes effect. With no store configured, every boot starts
+  fresh (unchanged). Reuses the existing `Agent::resume_session` path; no new
+  persistence machinery.
+- **Sandboxed `script` tools for filesystem-first agents (`tools/ kind: script`).**
+  A `tools/<name>.md` with `kind: script` now becomes a model-visible tool backed
+  by the existing sandboxed QuickJS `program` path — no new sandbox. The spec pins
+  the workspace-relative `.js`/`.mjs` `path`, the `allowed_tools` allow-list, and
+  the `limits` (timeout / tool-calls / output); the model supplies only `inputs`.
+  - New `AgentDirScriptTool` registers through the same non-shadowing
+    `register_dynamic_tool` path as builtins/MCP, so a `tools/` entry can add a
+    name but never replace a builtin. The model's call to the script tool is
+    permission-gated like any tool; the script's *inner* `ctx.tool` calls are
+    bounded by the pinned `allowed_tools` list + the QuickJS sandbox (no
+    fs/net/proc/env), but are NOT re-checked against the session permission policy.
+    The complement to `kind: mcp` (both now ship).
+  - The `allowed_tools` list is the security boundary for a directory script, so
+    the loader **fails it closed**: an omitted list grants NO tools (not all of
+    them); list only the minimum, and avoid high-authority tools unless the
+    directory is fully trusted.
+  - Fails closed at load (not at first call): a non-`.js`/`.mjs` `path`, a path
+    that escapes the workspace (absolute / `..`), an out-of-range sandbox limit
+    (zero, or an effectively-unbounded `timeoutMs`), an unknown `kind`, or a
+    duplicate tool name is a directory-load error. A `tools/` file is semi-trusted,
+    so limits are bounded (≤10 min / ≤1000 calls / ≤16 MiB).
+  - The serve daemon installs the agent dir's `tools/` into every schedule
+    session, so scheduled turns can call them.
+
 ## [3.6.2] - 2026-06-14
 
 Release-engineering fix for 3.6.0/3.6.1 (no library code changes). Both prior

@@ -34,7 +34,7 @@ providers "anthropic" {
 """.strip()
 
 
-def _write_agent_dir(*, with_schedule: bool) -> str:
+def _write_agent_dir(*, with_schedule: bool, with_tools: bool = False) -> str:
     base = tempfile.mkdtemp(prefix="a3s-code-serve-")
     pathlib.Path(base, "instructions.md").write_text(
         "You are a terse test agent. Answer in one word."
@@ -45,7 +45,29 @@ def _write_agent_dir(*, with_schedule: bool) -> str:
         (sched / "tick.md").write_text(
             '---\ncron: "* * * * * *"\nname: tick\n---\nReply with exactly one word: PONG'
         )
+    if with_tools:
+        tools = pathlib.Path(base, "tools")
+        tools.mkdir()
+        (tools / "echo.md").write_text(
+            "---\nkind: script\nname: echo-tool\npath: scripts/echo.js\n---\nEcho tool.\n"
+        )
     return base
+
+
+def test_serve_with_script_tool() -> None:
+    """Unit (hermetic): serving a dir that contains a `tools/` `kind: script`
+    spec succeeds. serve_agent_dir runs AgentDir::load synchronously (parsing
+    tools/), so a malformed tool spec would raise here; a valid one yields a
+    healthy handle that stops cleanly. No provider call is made."""
+    agent = Agent.create(INLINE_CONFIG)
+    agent_dir = _write_agent_dir(with_schedule=False, with_tools=True)
+    workspace = tempfile.mkdtemp(prefix="a3s-code-serve-tools-ws-")
+
+    handle = agent.serve_agent_dir(agent_dir, workspace)
+    assert handle.is_stopped() is False, "a tools/ kind:script agent dir should serve"
+    handle.stop()
+    assert handle.is_stopped() is True
+    print("python sdk serve with kind:script tool ok")
 
 
 def test_serve_handle_lifecycle() -> None:
@@ -105,6 +127,7 @@ def test_serve_real_schedule() -> None:
 
 def main() -> None:
     test_serve_handle_lifecycle()
+    test_serve_with_script_tool()
     test_serve_real_schedule()
 
 

@@ -926,7 +926,7 @@ fn has_windows_path_prefix(input: &str) -> bool {
     input.starts_with("\\\\") || input.starts_with("//")
 }
 
-fn validate_relative_pattern(pattern: &str, label: &str) -> Result<()> {
+pub(crate) fn validate_relative_pattern(pattern: &str, label: &str) -> Result<()> {
     let pattern = pattern.trim();
     if pattern.is_empty() {
         bail!("{label} cannot be empty");

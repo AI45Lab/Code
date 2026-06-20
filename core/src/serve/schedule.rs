@@ -151,6 +151,20 @@ mod tests {
     }
 
     #[test]
+    fn parses_6_field_cron_with_seconds() {
+        // 6-field form is passed through verbatim (the 5-field form gets a leading
+        // `0` seconds field). "30 0 9 * * *" → 09:00:30 daily.
+        let job = ScheduledJob::parse(spec("sec", "30 0 9 * * *", true)).unwrap();
+        let before = DateTime::parse_from_rfc3339("2026-01-01T08:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(
+            job.next_fire_after(before).unwrap().to_rfc3339(),
+            "2026-01-01T09:00:30+00:00"
+        );
+    }
+
+    #[test]
     fn scheduler_skips_disabled_and_rejects_bad_cron() {
         let s = Scheduler::new([
             spec("a", "0 9 * * *", true),

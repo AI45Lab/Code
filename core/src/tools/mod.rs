@@ -9,6 +9,7 @@
 //!   └── builtin tools (bash, read, write, edit, grep, glob, ls, patch, web_fetch, web_search)
 //! ```
 
+mod agent_dir_script_tool;
 mod artifacts;
 pub(crate) mod builtin;
 pub(crate) mod process;
@@ -19,6 +20,7 @@ pub mod skill;
 pub mod task;
 mod types;
 
+pub use agent_dir_script_tool::AgentDirScriptTool;
 pub use artifacts::{ArtifactStore, ArtifactStoreLimits, ToolArtifact};
 pub(crate) use builtin::register_skill;
 pub use builtin::{

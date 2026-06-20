@@ -36,7 +36,7 @@ function mkConfigFile() {
   return p
 }
 
-function writeAgentDir({ withSchedule }) {
+function writeAgentDir({ withSchedule, withTools }) {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'a3s-node-serve-'))
   fs.writeFileSync(path.join(base, 'instructions.md'), 'You are a terse test agent. Answer in one word.')
   if (withSchedule) {
@@ -44,6 +44,13 @@ function writeAgentDir({ withSchedule }) {
     fs.writeFileSync(
       path.join(base, 'schedules', 'tick.md'),
       '---\ncron: "* * * * * *"\nname: tick\n---\nReply with exactly one word: PONG',
+    )
+  }
+  if (withTools) {
+    fs.mkdirSync(path.join(base, 'tools'))
+    fs.writeFileSync(
+      path.join(base, 'tools', 'echo.md'),
+      '---\nkind: script\nname: echo-tool\npath: scripts/echo.js\n---\nEcho tool.\n',
     )
   }
   return base
@@ -77,6 +84,21 @@ assert.equal(typeof Agent.prototype.serveAgentDir, 'function', 'Agent.serveAgent
   await handle.stop() // idempotent — must not throw
   assert.equal(handle.isStopped(), true)
   console.log('node sdk serve handle lifecycle ok')
+}
+
+// ── Unit (hermetic): an agent dir with a kind:script tool loads + serves ─────
+{
+  const agent = await Agent.create(mkConfigFile())
+  const dir = writeAgentDir({ withSchedule: false, withTools: true })
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'a3s-node-serve-tools-ws-'))
+  // serveAgentDir loads the dir synchronously (AgentDir::load parses tools/ —
+  // here a `kind: script` spec); a malformed tool spec would throw here. A valid
+  // one yields a healthy handle that stops cleanly.
+  const handle = await agent.serveAgentDir(dir, ws)
+  assert.equal(handle.isStopped(), false, 'a tools/ kind:script agent dir should serve')
+  await handle.stop()
+  assert.equal(handle.isStopped(), true)
+  console.log('node sdk serve with kind:script tool ok')
 }
 
 // ── Integration (real provider, skipped without config) ─────────────────────

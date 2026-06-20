@@ -11,10 +11,9 @@
 //! ├── agent.acl          (optional)  model/providers/queue (CodeConfig). Default if absent.
 //! ├── skills/            (optional)  *.md skills, appended to CodeConfig.skill_dirs.
 //! ├── schedules/         (optional)  *.md cron jobs (YAML frontmatter `cron:` + body=prompt).
-//! ├── channels/          (optional)  *.{md,acl} inbound adapters — parsed here, served later.
-//! └── tools/             (optional)  *.md tool specs (`kind: mcp`) → MCP servers
-//! │                                 registered into the session (sandboxed-script
-//! │                                 `kind` is the next increment).
+//! └── tools/             (optional)  *.md tool specs: `kind: mcp` → MCP server,
+//! │                                 `kind: script` → sandboxed QuickJS tool. Both
+//! │                                 register into the session as ordinary tools.
 //! ```
 //!
 //! [`AgentDir::load`] SYNTHESIZES existing config objects rather than adding a new
@@ -42,21 +41,6 @@ pub struct ScheduleSpec {
     pub enabled: bool,
 }
 
-/// An inbound channel adapter spec, parsed from `channels/<name>.{md,acl}`.
-///
-/// Parsed so the directory convention is complete; the serve layer does not yet
-/// implement adapters (channels are design-only for now). `frontmatter` carries
-/// the raw adapter options for whichever adapter eventually handles `kind`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ChannelSpec {
-    /// Channel name (frontmatter `name`, else the file stem).
-    pub name: String,
-    /// Adapter kind: `http`, `slack`, `discord`, …
-    pub kind: String,
-    /// Raw frontmatter (YAML) for the adapter to interpret.
-    pub frontmatter: String,
-}
-
 /// A tool definition parsed from `tools/<name>.md`, dispatched by `kind`.
 ///
 /// Tool *definition* may come from the directory, but visibility and safety stay
@@ -69,6 +53,10 @@ pub enum ToolSpec {
     /// `kind = "mcp"` → an MCP server connected into the session, contributing its
     /// `list_tools()` as `mcp__<name>__*` tools.
     Mcp(McpServerConfig),
+    /// `kind = "script"` → a sandboxed QuickJS tool over the existing `program`
+    /// path. The model sees a named tool; the script `path`, allow-list, and
+    /// limits are pinned by the spec.
+    Script(ScriptToolSpec),
 }
 
 impl ToolSpec {
@@ -76,31 +64,71 @@ impl ToolSpec {
     pub fn name(&self) -> &str {
         match self {
             ToolSpec::Mcp(cfg) => &cfg.name,
+            ToolSpec::Script(spec) => &spec.name,
         }
     }
 
-    /// The spec kind discriminant (currently only `mcp`).
+    /// The spec kind discriminant (`mcp` or `script`).
     pub fn kind(&self) -> &str {
         match self {
             ToolSpec::Mcp(_) => "mcp",
+            ToolSpec::Script(_) => "script",
         }
     }
 }
 
+/// A sandboxed QuickJS tool parsed from a `kind = "script"` file. Names a
+/// workspace-relative `.js`/`.mjs` source and pins the sandbox allow-list +
+/// limits; the model supplies only `inputs`. Executed via the existing `program`
+/// tool path — no new sandbox. The model's call to it is permission-gated like any
+/// tool; the script's inner `ctx.tool` calls are bounded by `allowed_tools` + the
+/// sandbox (NOT the session permission policy), so the allow-list is the boundary.
+#[derive(Debug, Clone)]
+pub struct ScriptToolSpec {
+    /// Model-visible tool name (registry key; unique within `tools/`).
+    pub name: String,
+    /// Model-facing description (frontmatter `description`, else the file body).
+    pub description: String,
+    /// Workspace-relative path to the `.js`/`.mjs` source.
+    pub path: PathBuf,
+    /// Tools the script may call through `ctx`. The agent-dir loader fails closed:
+    /// an omitted list becomes `Some(vec![])` (the script may call NO tools), so a
+    /// directory author must opt each tool in explicitly. `program` is always
+    /// excluded (no script-launches-script). This allow-list — not the session
+    /// permission policy — is what bounds a script's inner `ctx.tool` calls, so it
+    /// is the security boundary for directory-authored scripts.
+    pub allowed_tools: Option<Vec<String>>,
+    /// Sandbox limits (timeout / tool-call / output caps); defaults apply when unset.
+    pub limits: ScriptToolLimits,
+}
+
+/// Sandbox limits for a `kind = "script"` tool. Mirrors the three numeric fields
+/// the `program` tool's `ScriptLimits` accepts and is serialized to it verbatim
+/// (camelCase keys), so no new limit machinery is introduced.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScriptToolLimits {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tool_calls: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_bytes: Option<usize>,
+}
+
 /// A loaded agent directory: synthesized [`CodeConfig`] + prompt slots + parsed
-/// schedule/channel specs. Build a session from `config` + `prompt_slots`.
+/// schedule + tool specs. Build a session from `config` + `prompt_slots`.
 ///
 /// Distinct from [`CodeConfig::agent_dirs`](crate::config::CodeConfig) /
 /// `register_agent_dir`, which scan a directory for **worker/subagent**
 /// definitions. An `AgentDir` is the eve-style *primary* agent — the directory
-/// that defines this agent's prompt, skills, schedules, and channels.
+/// that defines this agent's prompt, skills, schedules, and tools.
 #[derive(Debug, Clone)]
 pub struct AgentDir {
     pub dir: PathBuf,
     pub config: CodeConfig,
     pub prompt_slots: SystemPromptSlots,
     pub schedules: Vec<ScheduleSpec>,
-    pub channels: Vec<ChannelSpec>,
     pub tools: Vec<ToolSpec>,
 }
 
@@ -143,7 +171,6 @@ impl AgentDir {
         }
 
         let schedules = load_schedules(&dir.join("schedules"))?;
-        let channels = load_channels(&dir.join("channels"))?;
         let tools = load_tools(&dir.join("tools"))?;
 
         Ok(Self {
@@ -151,7 +178,6 @@ impl AgentDir {
             config,
             prompt_slots,
             schedules,
-            channels,
             tools,
         })
     }
@@ -202,28 +228,47 @@ fn load_schedules(dir: &Path) -> Result<Vec<ScheduleSpec>> {
     Ok(out)
 }
 
-fn load_channels(dir: &Path) -> Result<Vec<ChannelSpec>> {
-    let mut out = Vec::new();
-    for path in md_files(dir, &["md", "acl"])? {
-        let content = std::fs::read_to_string(&path)
-            .map_err(|e| CodeError::Context(format!("read {}: {e}", path.display())))?;
-        let (front, _body) = split_frontmatter(&content);
-        let front = front.ok_or_else(|| {
-            CodeError::Context(format!(
-                "channel {} has no frontmatter (need `kind:`)",
-                path.display()
-            ))
-        })?;
-        let meta: ChannelFront = serde_yaml::from_str(&front).map_err(|e| {
-            CodeError::Context(format!("channel {} frontmatter: {e}", path.display()))
-        })?;
-        out.push(ChannelSpec {
-            name: meta.name.unwrap_or_else(|| file_stem(&path)),
-            kind: meta.kind,
-            frontmatter: front,
-        });
+/// Upper bounds for a `kind = "script"` tool's sandbox limits. A `tools/` file is
+/// semi-trusted (the whole point of the guardrail), so an author cannot set an
+/// effectively-unbounded `timeoutMs` that hangs the harness, nor a zero that makes
+/// the tool silently non-functional. Generous ceilings; the program tool's own
+/// defaults (30s / 20 calls / 64 KiB) apply when a field is unset.
+const SCRIPT_MAX_TIMEOUT_MS: u64 = 600_000; // 10 minutes
+const SCRIPT_MAX_TOOL_CALLS: usize = 1_000;
+const SCRIPT_MAX_OUTPUT_BYTES: usize = 16 * 1024 * 1024; // 16 MiB
+
+/// Reject zero or above-ceiling limits at load (fail closed). Unset fields keep
+/// the program tool's defaults.
+fn validate_script_limits(
+    limits: ScriptToolLimits,
+) -> std::result::Result<ScriptToolLimits, String> {
+    fn check<T: PartialOrd + Copy + std::fmt::Display>(
+        v: Option<T>,
+        max: T,
+        one: T,
+        field: &str,
+    ) -> std::result::Result<(), String> {
+        if let Some(v) = v {
+            if v < one || v > max {
+                return Err(format!("limit {field}={v} is out of range [1, {max}]"));
+            }
+        }
+        Ok(())
     }
-    Ok(out)
+    check(limits.timeout_ms, SCRIPT_MAX_TIMEOUT_MS, 1, "timeoutMs")?;
+    check(
+        limits.max_tool_calls,
+        SCRIPT_MAX_TOOL_CALLS,
+        1,
+        "maxToolCalls",
+    )?;
+    check(
+        limits.max_output_bytes,
+        SCRIPT_MAX_OUTPUT_BYTES,
+        1,
+        "maxOutputBytes",
+    )?;
+    Ok(limits)
 }
 
 fn load_tools(dir: &Path) -> Result<Vec<ToolSpec>> {
@@ -232,7 +277,7 @@ fn load_tools(dir: &Path) -> Result<Vec<ToolSpec>> {
     for path in md_files(dir, &["md"])? {
         let content = std::fs::read_to_string(&path)
             .map_err(|e| CodeError::Context(format!("read {}: {e}", path.display())))?;
-        let (front, _body) = split_frontmatter(&content);
+        let (front, body) = split_frontmatter(&content);
         let front = front.ok_or_else(|| {
             CodeError::Context(format!(
                 "tool {} has no YAML frontmatter (need `kind:`)",
@@ -254,9 +299,52 @@ fn load_tools(dir: &Path) -> Result<Vec<ToolSpec>> {
                 })?;
                 ToolSpec::Mcp(cfg)
             }
+            "script" => {
+                let meta: ScriptFront = serde_yaml::from_str(&front).map_err(|e| {
+                    CodeError::Context(format!(
+                        "tool {} (kind=script) frontmatter: {e}",
+                        path.display()
+                    ))
+                })?;
+                // Fail closed at load (not at first call), consistent with the
+                // runtime guards the script runs under: a non-JS source, a path
+                // that escapes the workspace, or an out-of-range sandbox limit are
+                // all directory-load errors rather than first-call surprises.
+                let p = meta.path.to_string_lossy();
+                if !(p.ends_with(".js") || p.ends_with(".mjs")) {
+                    return Err(CodeError::Context(format!(
+                        "tool {} (kind=script) path `{p}` must point to a .js or .mjs file",
+                        path.display()
+                    )));
+                }
+                crate::workspace::validate_relative_pattern(&p, "script path").map_err(|e| {
+                    CodeError::Context(format!("tool {} (kind=script): {e}", path.display()))
+                })?;
+                let limits =
+                    validate_script_limits(meta.limits.unwrap_or_default()).map_err(|e| {
+                        CodeError::Context(format!("tool {} (kind=script): {e}", path.display()))
+                    })?;
+                let description = meta
+                    .description
+                    .map(|d| d.trim().to_string())
+                    .filter(|d| !d.is_empty())
+                    .unwrap_or_else(|| body.trim().to_string());
+                ToolSpec::Script(ScriptToolSpec {
+                    name: meta.name.unwrap_or_else(|| file_stem(&path)),
+                    description,
+                    path: meta.path,
+                    // Fail closed: a directory-authored script is semi-trusted and
+                    // its inner `ctx.tool` calls are NOT re-checked by the session
+                    // permission policy (only by this allow-list + the sandbox), so
+                    // an omitted list grants NO tools rather than all of them. The
+                    // author must opt each tool in explicitly.
+                    allowed_tools: Some(meta.allowed_tools.unwrap_or_default()),
+                    limits,
+                })
+            }
             other => {
                 return Err(CodeError::Context(format!(
-                    "tool {} has unsupported kind `{other}` (supported: `mcp`)",
+                    "tool {} has unsupported kind `{other}` (supported: `mcp`, `script`)",
                     path.display()
                 )));
             }
@@ -310,15 +398,23 @@ struct ScheduleFront {
 }
 
 #[derive(serde::Deserialize)]
-struct ChannelFront {
-    kind: String,
-    #[serde(default)]
-    name: Option<String>,
-}
-
-#[derive(serde::Deserialize)]
 struct ToolFront {
     kind: String,
+}
+
+/// Frontmatter for a `kind = "script"` tool. The `kind` key is ignored here
+/// (already matched); unknown keys are tolerated like the other loaders.
+#[derive(serde::Deserialize)]
+struct ScriptFront {
+    #[serde(default)]
+    name: Option<String>,
+    path: PathBuf,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    allowed_tools: Option<Vec<String>>,
+    #[serde(default)]
+    limits: Option<ScriptToolLimits>,
 }
 
 #[cfg(test)]
@@ -331,7 +427,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("skills")).unwrap();
         std::fs::create_dir_all(base.join("schedules")).unwrap();
-        std::fs::create_dir_all(base.join("channels")).unwrap();
         std::fs::create_dir_all(base.join("tools")).unwrap();
         std::fs::write(
             base.join("instructions.md"),
@@ -349,13 +444,13 @@ mod tests {
         )
         .unwrap();
         std::fs::write(
-            base.join("channels/web.md"),
-            "---\nkind: http\nport: 8787\n---\nInbound HTTP channel.\n",
+            base.join("tools/github.md"),
+            "---\nkind: mcp\nname: github\ntransport: stdio\ncommand: echo\nargs: [\"hi\"]\n---\nGitHub MCP tools.\n",
         )
         .unwrap();
         std::fs::write(
-            base.join("tools/github.md"),
-            "---\nkind: mcp\nname: github\ntransport: stdio\ncommand: echo\nargs: [\"hi\"]\n---\nGitHub MCP tools.\n",
+            base.join("tools/search.md"),
+            "---\nkind: script\nname: search-auth\npath: scripts/search.js\nallowed_tools: [grep, read]\nlimits:\n  timeoutMs: 30000\n  maxToolCalls: 10\n---\nFind auth-related files.\n",
         )
         .unwrap();
         base
@@ -387,16 +482,82 @@ mod tests {
         assert_eq!(s.prompt, "Generate the daily report and post it.");
         assert!(s.enabled);
 
-        // channels/*.md → parsed kind (adapters not yet implemented).
-        assert_eq!(agent.channels.len(), 1);
-        assert_eq!(agent.channels[0].kind, "http");
-
-        // tools/*.md (kind=mcp) → parsed MCP server spec.
-        assert_eq!(agent.tools.len(), 1);
+        // tools/*.md → parsed by kind (sorted by path: github.md, then search.md).
+        assert_eq!(agent.tools.len(), 2);
         assert_eq!(agent.tools[0].kind(), "mcp");
         assert_eq!(agent.tools[0].name(), "github");
 
+        // kind=script → ScriptToolSpec with pinned path, allow-list, limits; the
+        // body becomes the model-facing description.
+        assert_eq!(agent.tools[1].kind(), "script");
+        assert_eq!(agent.tools[1].name(), "search-auth");
+        let ToolSpec::Script(s) = &agent.tools[1] else {
+            panic!("expected a script tool");
+        };
+        assert_eq!(s.path, PathBuf::from("scripts/search.js"));
+        assert_eq!(s.description, "Find auth-related files.");
+        assert_eq!(
+            s.allowed_tools.as_deref(),
+            Some(["grep".to_string(), "read".to_string()].as_slice())
+        );
+        assert_eq!(s.limits.timeout_ms, Some(30000));
+        assert_eq!(s.limits.max_tool_calls, Some(10));
+
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One script tool per file, written under a unique temp dir, must fail to load.
+    fn assert_script_tool_load_err(tag: &str, frontmatter: &str) {
+        let base = std::env::temp_dir().join(format!("a3s-agentdir-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("tools")).unwrap();
+        std::fs::write(base.join("instructions.md"), "role").unwrap();
+        std::fs::write(base.join("tools/x.md"), frontmatter).unwrap();
+        assert!(
+            AgentDir::load(&base).is_err(),
+            "expected load error for: {frontmatter}"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn script_tool_non_js_path_is_an_error() {
+        // path must end .js/.mjs — fail closed at load, not at first call.
+        assert_script_tool_load_err(
+            "py",
+            "---\nkind: script\nname: x\npath: scripts/run.py\n---\n",
+        );
+    }
+
+    #[test]
+    fn script_tool_escaping_path_is_an_error() {
+        // Absolute and parent-traversal paths are rejected at load (fail closed),
+        // matching the runtime workspace boundary.
+        assert_script_tool_load_err(
+            "abs",
+            "---\nkind: script\nname: x\npath: /etc/evil.js\n---\n",
+        );
+        assert_script_tool_load_err(
+            "dotdot",
+            "---\nkind: script\nname: x\npath: ../../escape.js\n---\n",
+        );
+    }
+
+    #[test]
+    fn script_tool_out_of_range_limits_are_an_error() {
+        // Zero disables the tool; u64::MAX disables the sandbox timeout. Both rejected.
+        assert_script_tool_load_err(
+            "zero",
+            "---\nkind: script\nname: x\npath: a.js\nlimits:\n  timeoutMs: 0\n---\n",
+        );
+        assert_script_tool_load_err(
+            "huge",
+            "---\nkind: script\nname: x\npath: a.js\nlimits:\n  timeoutMs: 18446744073709551615\n---\n",
+        );
+        assert_script_tool_load_err(
+            "calls",
+            "---\nkind: script\nname: x\npath: a.js\nlimits:\n  maxToolCalls: 0\n---\n",
+        );
     }
 
     #[test]
@@ -422,6 +583,59 @@ mod tests {
         std::fs::write(base.join("tools/a.md"), spec).unwrap();
         std::fs::write(base.join("tools/b.md"), spec).unwrap();
         assert!(AgentDir::load(&base).is_err());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn script_tool_accepts_mjs_and_frontmatter_description_wins_over_body() {
+        let base = std::env::temp_dir().join(format!("a3s-agentdir-mjs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("tools")).unwrap();
+        std::fs::write(base.join("instructions.md"), "role").unwrap();
+        std::fs::write(
+            base.join("tools/x.md"),
+            "---\nkind: script\nname: x\npath: a.mjs\ndescription: from frontmatter\n---\nbody description\n",
+        )
+        .unwrap();
+
+        let agent = AgentDir::load(&base).unwrap();
+        let ToolSpec::Script(s) = &agent.tools[0] else {
+            panic!("expected script tool");
+        };
+        assert_eq!(s.path, PathBuf::from("a.mjs"), ".mjs is accepted");
+        assert_eq!(
+            s.description, "from frontmatter",
+            "frontmatter description takes precedence over the body"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn script_tool_omitted_allow_list_fails_closed_to_empty() {
+        // A directory script with no `allowed_tools` must default to an EMPTY
+        // allow-list (no tools), not "all tools" — its inner ctx.tool calls are
+        // not re-checked by the session permission policy, so the allow-list is
+        // the boundary and an omission must grant nothing.
+        let base =
+            std::env::temp_dir().join(format!("a3s-agentdir-noallow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("tools")).unwrap();
+        std::fs::write(base.join("instructions.md"), "role").unwrap();
+        std::fs::write(
+            base.join("tools/x.md"),
+            "---\nkind: script\nname: x\npath: a.js\n---\n",
+        )
+        .unwrap();
+
+        let agent = AgentDir::load(&base).unwrap();
+        let ToolSpec::Script(s) = &agent.tools[0] else {
+            panic!("expected script tool");
+        };
+        assert_eq!(
+            s.allowed_tools.as_deref(),
+            Some([].as_slice()),
+            "omitted allowed_tools must fail closed to an empty list, not None/all"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 

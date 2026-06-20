@@ -414,6 +414,13 @@ impl Agent {
     ///
     /// The `options` must include a `session_store` (or `with_file_session_store`)
     /// that contains the saved session.
+    ///
+    /// The resumed session uses the **workspace stored in the snapshot**, not a
+    /// workspace from `options`. The store is therefore a trust boundary: its
+    /// contents drive the resumed workspace and the persisted runtime policies.
+    ///
+    /// Runtime: this loads the snapshot via `block_in_place`, so it must be called
+    /// on a multi-threaded Tokio runtime (it panics on a current-thread runtime).
     pub fn resume_session(
         &self,
         session_id: &str,
@@ -1309,6 +1316,15 @@ impl AgentSession {
         SessionExtensionRuntime::from_session(self)
             .add_mcp_server(config)
             .await
+    }
+
+    /// The session's tool executor, for installing agent-dir `tools/` entries
+    /// (e.g. a `kind = "script"` tool) into the live registry. Internal seam used
+    /// by [`serve::install_agent_dir_tools`](crate::serve::install_agent_dir_tools)
+    /// (the only caller, hence the `serve` gate).
+    #[cfg(feature = "serve")]
+    pub(crate) fn tool_executor(&self) -> &Arc<crate::tools::ToolExecutor> {
+        &self.tool_executor
     }
 
     /// Remove an MCP server from this session.

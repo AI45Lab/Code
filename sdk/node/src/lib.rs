@@ -3005,11 +3005,12 @@ impl Agent {
 
     /// Serve a filesystem-first agent directory's cron schedules until stopped.
     ///
-    /// Loads the directory by convention (`instructions.md` required, optional
-    /// `agent.acl`, `skills/`, `schedules/*.md`) and starts one durable session
-    /// per enabled schedule (stable id `schedule:<name>`). Each schedule fires as
-    /// a FULL harness turn (context, tool visibility, safety gate, verification),
-    /// never a raw model call.
+    /// Loads the directory by convention: `instructions.md` (required), optional
+    /// `agent.acl`, `skills/`, `schedules/*.md` (cron jobs), and `tools/*.md`
+    /// (`kind: mcp` servers or `kind: script` sandboxed QuickJS tools). It starts
+    /// one durable session per enabled schedule (stable id `schedule:<name>`) with
+    /// the agent dir's tools installed; each schedule fires as a FULL harness turn
+    /// (context, tool visibility, safety gate, verification), never a raw model call.
     ///
     /// Returns immediately with a {@link ServeHandle}; the daemon runs in the
     /// background until `handle.stop()` is called. The handle MUST be kept and
@@ -3021,7 +3022,7 @@ impl Agent {
     /// await handle.stop();
     /// ```
     ///
-    /// @param dir - Path to the agent directory to serve (defines schedules/skills/prompt)
+    /// @param dir - Path to the agent directory (prompt/skills/schedules/tools)
     /// @param workspace - Workspace directory each scheduled turn operates in
     /// @param options - Optional session overrides merged into every schedule session
     ///   (model, llmClient, sessionStore, …); `promptSlots`/`sessionId` set here are
