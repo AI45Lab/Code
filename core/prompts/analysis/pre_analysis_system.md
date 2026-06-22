@@ -23,7 +23,7 @@ Schema:
     ],
     "required_tools": ["tool_name"]
   },
-  "optimized_input": "the same request with references resolved, in the user's language"
+  "optimized_input": "the full original request with references resolved, in the user's language"
 }
 
 Rules:
@@ -43,4 +43,7 @@ Rules:
   VeryComplex = release, migration, security-sensitive, or broad architecture work.
 - Prefer `program` for repeated structured repository analysis; prefer
   `task`/`parallel_task` for delegated agent work.
+- `optimized_input` must preserve every concrete constraint, path, name, branch,
+  environment variable, metric, and negative instruction from the original user
+  message. Do not replace the task with a short summary.
 - Respond with valid JSON only. No markdown fences, comments, or explanation.

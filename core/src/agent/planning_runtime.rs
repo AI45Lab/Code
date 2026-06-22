@@ -5,6 +5,23 @@ use anyhow::Result;
 use tokio::sync::mpsc;
 
 impl AgentLoop {
+    pub(super) fn preserve_plan_goal_context(
+        mut plan: ExecutionPlan,
+        execution_prompt: &str,
+    ) -> ExecutionPlan {
+        let context = execution_prompt.trim();
+        let goal = plan.goal.trim();
+
+        if context.is_empty() || goal == context || goal.contains(context) {
+            return plan;
+        }
+
+        plan.goal = format!(
+            "Original user request and planning context:\n{context}\n\nPlanner goal:\n{goal}"
+        );
+        plan
+    }
+
     pub(super) async fn emit_task_updated(
         &self,
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
@@ -60,7 +77,10 @@ impl AgentLoop {
 
         // Use pre-analysis result if available (goal + plan already computed in one LLM call).
         let (goal, plan) = if let Some(analysis) = pre_analysis {
-            (Some(analysis.goal.clone()), analysis.execution_plan.clone())
+            (
+                Some(analysis.goal.clone()),
+                Self::preserve_plan_goal_context(analysis.execution_plan.clone(), prompt),
+            )
         } else {
             // Fall back: extract goal and create plan via separate LLM calls.
             let g = if self.config.goal_tracking {

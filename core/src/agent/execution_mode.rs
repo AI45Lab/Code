@@ -14,6 +14,26 @@ struct ExecutionRoute {
 }
 
 impl AgentLoop {
+    pub(super) fn preserve_original_prompt_for_execution(
+        original_prompt: &str,
+        optimized_input: &str,
+    ) -> String {
+        let original = original_prompt.trim();
+        let optimized = optimized_input.trim();
+
+        if original.is_empty() {
+            return optimized.to_string();
+        }
+        if optimized.is_empty() || optimized == original {
+            return original.to_string();
+        }
+        if optimized.contains(original) {
+            return optimized.to_string();
+        }
+
+        format!("Original user request:\n{original}\n\nPlanner-optimized request:\n{optimized}")
+    }
+
     pub(super) fn should_run_pre_analysis(&self) -> bool {
         match self.config.planning_mode {
             PlanningMode::Disabled => false,
@@ -90,7 +110,9 @@ impl AgentLoop {
         let use_planning = self.resolve_planning_decision(style, pre_analysis.as_ref());
         let effective_prompt = pre_analysis
             .as_ref()
-            .map(|analysis| analysis.optimized_input.clone())
+            .map(|analysis| {
+                Self::preserve_original_prompt_for_execution(prompt, &analysis.optimized_input)
+            })
             .unwrap_or_else(|| prompt.to_string());
 
         ExecutionRoute {

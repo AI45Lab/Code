@@ -62,7 +62,7 @@ fn test_delegated_task_args_include_prompt_contract() {
     let task = Task::new("s1", "验证 program 工具")
         .with_tool("task")
         .with_success_criteria("All integration checks pass.");
-    let args = AgentLoop::delegated_task_args(&task, 2, 5);
+    let args = AgentLoop::delegated_task_args_with_goal(None, &task, 2, 5);
 
     assert_eq!(args["agent"], "verification");
     assert_eq!(args["description"], "验证 program 工具");
@@ -81,12 +81,61 @@ fn test_parallel_delegated_task_args_preserve_order() {
         (Task::new("s1", "Find docs").with_tool("task"), 1),
         (Task::new("s2", "Run tests").with_tool("task"), 2),
     ];
-    let args = AgentLoop::parallel_delegated_task_args(&steps, 2);
+    let args = AgentLoop::parallel_delegated_task_args_with_goal(None, &steps, 2);
     let tasks = args["tasks"].as_array().unwrap();
 
     assert_eq!(tasks.len(), 2);
     assert_eq!(tasks[0]["agent"], "explore");
     assert_eq!(tasks[1]["agent"], "verification");
+}
+
+#[test]
+fn test_preserve_original_prompt_for_planning_execution() {
+    let original =
+        "Fix planning mode. Preserve /tmp/task.txt and do not drop negative instructions.";
+    let optimized = "Fix planning mode.";
+
+    let preserved = AgentLoop::preserve_original_prompt_for_execution(original, optimized);
+
+    assert!(preserved.contains("Original user request"));
+    assert!(preserved.contains("/tmp/task.txt"));
+    assert!(preserved.contains("do not drop negative instructions"));
+    assert!(preserved.contains("Planner-optimized request"));
+    assert!(preserved.contains(optimized));
+}
+
+#[test]
+fn test_preserve_plan_goal_context_keeps_original_request_visible() {
+    use crate::planning::{Complexity, ExecutionPlan};
+
+    let plan = ExecutionPlan::new("Fix planning mode".to_string(), Complexity::Medium);
+    let execution_prompt =
+        "Original user request:\nFix planning mode for /workspace/app; do not change API.";
+
+    let preserved = AgentLoop::preserve_plan_goal_context(plan, execution_prompt);
+
+    assert!(preserved.goal.contains("/workspace/app"));
+    assert!(preserved.goal.contains("do not change API"));
+    assert!(preserved.goal.contains("Planner goal"));
+}
+
+#[test]
+fn test_delegated_plan_step_prompt_includes_plan_goal_context() {
+    use crate::planning::Task;
+
+    let task = Task::new("s1", "Implement the first step").with_tool("task");
+    let args = AgentLoop::delegated_task_args_with_goal(
+        Some("Original request: update /workspace/app and keep API stable."),
+        &task,
+        1,
+        1,
+    );
+    let prompt = args["prompt"].as_str().unwrap();
+
+    assert!(prompt.contains("Plan goal/context"));
+    assert!(prompt.contains("/workspace/app"));
+    assert!(prompt.contains("keep API stable"));
+    assert!(prompt.contains("Implement the first step"));
 }
 
 #[test]

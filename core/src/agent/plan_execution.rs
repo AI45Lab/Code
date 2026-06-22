@@ -109,15 +109,22 @@ impl AgentLoop {
         }
     }
 
-    pub(super) fn delegated_prompt_for_step(
+    pub(super) fn delegated_prompt_for_step_with_goal(
+        plan_goal: Option<&str>,
         step: &Task,
         step_number: usize,
         total_steps: usize,
     ) -> String {
-        let mut prompt = format!(
+        let mut prompt = String::new();
+        if let Some(goal) = plan_goal.map(str::trim).filter(|goal| !goal.is_empty()) {
+            prompt.push_str("Plan goal/context:\n");
+            prompt.push_str(goal);
+            prompt.push_str("\n\n");
+        }
+        prompt.push_str(&format!(
             "Execute plan step {}/{}.\n\nTask:\n{}\n",
             step_number, total_steps, step.content
-        );
+        ));
         if let Some(criteria) = step
             .success_criteria
             .as_deref()
@@ -131,7 +138,8 @@ impl AgentLoop {
         prompt
     }
 
-    pub(super) fn delegated_task_args(
+    pub(super) fn delegated_task_args_with_goal(
+        plan_goal: Option<&str>,
         step: &Task,
         step_number: usize,
         total_steps: usize,
@@ -139,17 +147,20 @@ impl AgentLoop {
         json!({
             "agent": Self::delegated_agent_for_step(step),
             "description": step.content,
-            "prompt": Self::delegated_prompt_for_step(step, step_number, total_steps),
+            "prompt": Self::delegated_prompt_for_step_with_goal(plan_goal, step, step_number, total_steps),
         })
     }
 
-    pub(super) fn parallel_delegated_task_args(
+    pub(super) fn parallel_delegated_task_args_with_goal(
+        plan_goal: Option<&str>,
         steps: &[(Task, usize)],
         total_steps: usize,
     ) -> Value {
         let tasks = steps
             .iter()
-            .map(|(step, step_number)| Self::delegated_task_args(step, *step_number, total_steps))
+            .map(|(step, step_number)| {
+                Self::delegated_task_args_with_goal(plan_goal, step, *step_number, total_steps)
+            })
             .collect::<Vec<_>>();
         json!({ "tasks": tasks })
     }
@@ -275,9 +286,14 @@ impl AgentLoop {
                         _ => "task",
                     };
                     let args = if tool_name == "parallel_task" {
-                        json!({ "tasks": [Self::delegated_task_args(&step, step_number, total_steps)] })
+                        json!({ "tasks": [Self::delegated_task_args_with_goal(Some(&plan.goal), &step, step_number, total_steps)] })
                     } else {
-                        Self::delegated_task_args(&step, step_number, total_steps)
+                        Self::delegated_task_args_with_goal(
+                            Some(&plan.goal),
+                            &step,
+                            step_number,
+                            total_steps,
+                        )
                     };
                     let (output, _exit_code, is_error, _metadata) = self
                         .execute_delegated_plan_tool(tool_name, &args, session_id, &event_tx)
@@ -429,7 +445,11 @@ impl AgentLoop {
                     .iter()
                     .all(|(step, _)| Self::should_delegate_plan_step(step))
                 {
-                    let args = Self::parallel_delegated_task_args(&ready_steps, total_steps);
+                    let args = Self::parallel_delegated_task_args_with_goal(
+                        Some(&plan.goal),
+                        &ready_steps,
+                        total_steps,
+                    );
                     let (output, _exit_code, is_error, metadata) = self
                         .execute_delegated_plan_tool("parallel_task", &args, session_id, &event_tx)
                         .await;
