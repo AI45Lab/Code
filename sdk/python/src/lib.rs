@@ -1112,8 +1112,7 @@ impl PyAgent {
             // serve_agent_dir returns Result and never panics by construction; a
             // scheduling error is reported, not propagated (spawned task bodies
             // are not panic-safe).
-            if let Err(e) =
-                rust_serve_agent_dir(&agent, &agent_dir, workspace, extra, cancel).await
+            if let Err(e) = rust_serve_agent_dir(&agent, &agent_dir, workspace, extra, cancel).await
             {
                 eprintln!("a3s-code: serve_agent_dir daemon exited with error: {e}");
             }

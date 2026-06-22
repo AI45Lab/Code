@@ -42,6 +42,7 @@ mod js_slash_command;
 use js_slash_command::{js_command_context_to_object, JsSlashCommand};
 
 use a3s_code_core::commands::CommandContext as RustCommandContext;
+use a3s_code_core::config::AgentDir as RustAgentDir;
 use a3s_code_core::config::{
     BrowserBackend as RustBrowserBackend, HeadlessConfig as RustHeadlessConfig,
     SearchConfig as RustSearchConfig, SearchEngineConfig as RustSearchEngineConfig,
@@ -70,6 +71,7 @@ use a3s_code_core::queue::{
     MetricsSnapshot as RustMetricsSnapshot, SessionLane as RustSessionLane,
     SessionQueueConfig as RustSessionQueueConfig, TaskHandlerMode as RustTaskHandlerMode,
 };
+use a3s_code_core::serve::serve_agent_dir as rust_serve_agent_dir;
 use a3s_code_core::skills::{builtin_skills as rust_builtin_skills, SkillKind as RustSkillKind};
 use a3s_code_core::subagent::{
     AgentDefinition as RustAgentDefinition, ModelConfig as RustAgentModelConfig,
@@ -80,8 +82,6 @@ use a3s_code_core::verification::{
     VerificationCommand as RustVerificationCommand, VerificationReport as RustVerificationReport,
     VerificationStatus as RustVerificationStatus, VerificationSummary as RustVerificationSummary,
 };
-use a3s_code_core::config::AgentDir as RustAgentDir;
-use a3s_code_core::serve::serve_agent_dir as rust_serve_agent_dir;
 use a3s_code_core::{
     Agent as RustAgent, AgentEvent as RustAgentEvent, AgentResult as RustAgentResult,
     AgentSession as RustAgentSession, PlanningMode as RustPlanningMode,
