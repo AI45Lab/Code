@@ -1807,6 +1807,26 @@ async fn test_session_uses_single_delegation_tool_surface() {
     assert!(!names.contains(&"run_team".to_string()));
 }
 
+#[tokio::test]
+async fn test_session_can_disable_manual_delegation_tools_without_dropping_registry() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let opts = SessionOptions::new()
+        .with_worker_agent(crate::subagent::WorkerAgentSpec::planner(
+            "release-planner",
+            "Plan releases",
+        ))
+        .with_manual_delegation_enabled(false);
+    let session = agent
+        .session("/tmp/test-workspace-no-manual-delegation", Some(opts))
+        .unwrap();
+    let names = session.tool_names();
+
+    assert!(!names.contains(&"task".to_string()));
+    assert!(!names.contains(&"parallel_task".to_string()));
+    assert!(session.agent_registry.exists("release-planner"));
+    assert!(!session.config.auto_delegation.allow_manual_delegation);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn test_session_with_queue_config() {
     let agent = Agent::from_config(test_config()).await.unwrap();
@@ -2621,13 +2641,16 @@ async fn test_session_options_builders() {
         .with_auto_save(true)
         .with_max_parallel_tasks(3)
         .with_auto_delegation_enabled(true)
+        .with_manual_delegation_enabled(false)
         .with_auto_parallel_delegation(false);
     assert_eq!(opts.session_id, Some("test-id".to_string()));
     assert!(opts.auto_save);
     assert_eq!(opts.max_parallel_tasks, Some(3));
+    assert_eq!(opts.manual_delegation_enabled, Some(false));
     assert_eq!(opts.auto_parallel_delegation, Some(false));
     let auto = opts.auto_delegation.expect("auto delegation config");
     assert!(auto.enabled);
+    assert!(!auto.allow_manual_delegation);
     assert!(!auto.auto_parallel);
 }
 

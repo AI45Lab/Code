@@ -18,8 +18,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-const DISABLE_DELEGATION_TOOLS_ENV: &str = "A3S_CODE_DISABLE_DELEGATION_TOOLS";
-
 pub(super) struct SessionCapabilityInput<'a> {
     pub(super) code_config: &'a CodeConfig,
     pub(super) base_config: &'a AgentConfig,
@@ -165,9 +163,7 @@ fn register_task_capability(
     use crate::tools::register_task_with_mcp;
 
     let registry = AgentRegistry::new();
-    let disable_delegation_tools = disable_delegation_tools_from_env(
-        std::env::var(DISABLE_DELEGATION_TOOLS_ENV).ok().as_deref(),
-    );
+    let auto_delegation = super::session_config::resolve_auto_delegation_config(code_config, opts);
     let built_in_agent_dirs = built_in_agent_dirs(workspace);
     for dir in code_config
         .agent_dirs
@@ -183,7 +179,9 @@ fn register_task_capability(
         registry.register_worker(worker.clone());
     }
 
-    if disable_delegation_tools {
+    if !auto_delegation.allow_manual_delegation {
+        // Keep the registry populated for introspection and host-managed worker
+        // registration even when the model-visible delegation tools are hidden.
         return Arc::new(registry);
     }
 
@@ -210,17 +208,6 @@ fn register_task_capability(
         Some(subagent_tasks),
     );
     registry
-}
-
-fn disable_delegation_tools_from_env(value: Option<&str>) -> bool {
-    value
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false)
 }
 
 fn built_in_agent_dirs(workspace: &Path) -> Vec<PathBuf> {
@@ -283,26 +270,6 @@ fn group_mcp_tools_by_server(all_tools: Vec<(String, McpTool)>) -> HashMap<Strin
         by_server.entry(server).or_insert_with(Vec::new).push(tool);
     }
     by_server
-}
-
-#[cfg(test)]
-mod tests {
-    use super::disable_delegation_tools_from_env;
-
-    #[test]
-    fn disable_delegation_tools_accepts_common_truthy_values() {
-        for value in ["1", "true", "TRUE", " yes ", "on", "On"] {
-            assert!(disable_delegation_tools_from_env(Some(value)));
-        }
-    }
-
-    #[test]
-    fn disable_delegation_tools_rejects_empty_missing_and_falsey_values() {
-        for value in ["", "0", "false", "no", "off", "enabled"] {
-            assert!(!disable_delegation_tools_from_env(Some(value)));
-        }
-        assert!(!disable_delegation_tools_from_env(None));
-    }
 }
 
 fn build_context_providers(

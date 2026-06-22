@@ -292,6 +292,11 @@ fields, new `SessionStore` trait methods with default no-op impls).
   global `auto_parallel` kill switch. Setting `auto_parallel = false` disables
   automatic parallel child-agent fan-out while keeping manual `parallel_task`
   available.
+- Added `auto_delegation.allow_manual_delegation` and
+  `SessionOptions::with_manual_delegation_enabled(...)` so hosts can hide the
+  model-visible `task` / `parallel_task` tools per session while preserving the
+  child-agent registry for introspection and worker registration. This is an
+  operational cost/debug control, not a security sandbox.
 - Added `max_parallel_tasks` as the shared sibling fan-out limit for
   `parallel_task`, delegated plan waves, and safe parallel write batches.
 - Added a reusable ordered parallel executor so concurrent child results remain

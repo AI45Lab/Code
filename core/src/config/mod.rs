@@ -61,6 +61,14 @@ pub struct AutoDelegationConfig {
     /// Manual `parallel_task` calls remain available when this is false.
     #[serde(alias = "auto_parallel")]
     pub auto_parallel: bool,
+    /// Allow model-visible manual `task` and `parallel_task` delegation tools.
+    ///
+    /// Set this to false for cost control or debugging when child-agent tools
+    /// should be absent from the session tool surface. This is not a security
+    /// sandbox: the parent agent may still have other tools such as `bash`,
+    /// MCP tools, or skills.
+    #[serde(alias = "allow_manual_delegation")]
+    pub allow_manual_delegation: bool,
     /// Minimum local confidence required to auto-delegate a child task.
     pub min_confidence: f32,
     /// Maximum number of automatic child tasks per user request.
@@ -72,6 +80,7 @@ impl Default for AutoDelegationConfig {
         Self {
             enabled: false,
             auto_parallel: true,
+            allow_manual_delegation: true,
             min_confidence: 0.72,
             max_tasks: 4,
         }

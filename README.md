@@ -1527,10 +1527,11 @@ skill_dirs = ["./skills"]
 mcp_servers = []
 
 auto_delegation {
-  enabled        = false
-  auto_parallel  = false
-  min_confidence = 0.72
-  max_tasks      = 4
+  enabled                  = false
+  auto_parallel            = false
+  allow_manual_delegation  = true
+  min_confidence           = 0.72
+  max_tasks                = 4
 }
 
 ahp = {
@@ -1549,6 +1550,11 @@ safe parallel write batches.
 `auto_delegation.enabled` controls Claude Code-style automatic subagent
 delegation. `auto_parallel = false` is a global kill switch for automatic
 parallel child-agent fan-out; manual `parallel_task` remains available.
+Set `allow_manual_delegation = false` to hide the model-visible `task` and
+`parallel_task` tools for cost control or debugging while preserving the child
+agent registry for introspection and host-managed worker registration. This is
+not a security sandbox: the parent agent may still use other registered tools,
+MCP servers, or skills.
 
 ---
 
