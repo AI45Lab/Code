@@ -72,6 +72,17 @@ fn parse_auto_delegation_block(
     {
         config.auto_parallel = auto_parallel;
     }
+    if let Some(allow_manual_delegation) = acl_bool_attr(
+        block,
+        &[
+            "allow_manual_delegation",
+            "allowManualDelegation",
+            "manual_delegation",
+            "manualDelegation",
+        ],
+    ) {
+        config.allow_manual_delegation = allow_manual_delegation;
+    }
     if let Some(min_confidence) = acl_f32_attr(block, &["min_confidence", "minConfidence"]) {
         config.min_confidence = min_confidence.clamp(0.0, 1.0);
     }

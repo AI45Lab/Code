@@ -5,6 +5,29 @@ use crate::llm::LlmClient;
 use anyhow::Context;
 use std::sync::Arc;
 
+pub(super) fn resolve_auto_delegation_config(
+    code_config: &CodeConfig,
+    opts: &SessionOptions,
+) -> crate::config::AutoDelegationConfig {
+    let mut auto_delegation = if let Some(config) = opts.auto_delegation.clone() {
+        config
+    } else {
+        let mut config = code_config.auto_delegation.clone();
+        if let Some(auto_parallel) = code_config.auto_parallel {
+            config.auto_parallel = auto_parallel;
+        }
+        config
+    };
+    if let Some(enabled) = opts.manual_delegation_enabled {
+        auto_delegation.allow_manual_delegation = enabled;
+    }
+    if let Some(auto_parallel) = opts.auto_parallel_delegation {
+        auto_delegation.auto_parallel = auto_parallel;
+    }
+
+    auto_delegation
+}
+
 pub(super) fn resolve_session_llm_client(
     code_config: &CodeConfig,
     opts: &SessionOptions,

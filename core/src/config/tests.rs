@@ -54,6 +54,7 @@ fn test_config_with_storage_backend() {
             auto_delegation {
               enabled = true
               auto_parallel = true
+              allow_manual_delegation = false
               min_confidence = 0.8
               max_tasks = 2
             }
@@ -67,6 +68,7 @@ fn test_config_with_storage_backend() {
     assert_eq!(config.max_parallel_tasks, Some(3));
     assert!(config.auto_delegation.enabled);
     assert!(!config.auto_delegation.auto_parallel);
+    assert!(!config.auto_delegation.allow_manual_delegation);
     assert!((config.auto_delegation.min_confidence - 0.8).abs() < f32::EPSILON);
     assert_eq!(config.auto_delegation.max_tasks, 2);
 }

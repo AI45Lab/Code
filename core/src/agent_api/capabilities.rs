@@ -163,6 +163,7 @@ fn register_task_capability(
     use crate::tools::register_task_with_mcp;
 
     let registry = AgentRegistry::new();
+    let auto_delegation = super::session_config::resolve_auto_delegation_config(code_config, opts);
     let built_in_agent_dirs = built_in_agent_dirs(workspace);
     for dir in code_config
         .agent_dirs
@@ -176,6 +177,12 @@ fn register_task_capability(
     }
     for worker in &opts.worker_agents {
         registry.register_worker(worker.clone());
+    }
+
+    if !auto_delegation.allow_manual_delegation {
+        // Keep the registry populated for introspection and host-managed worker
+        // registration even when the model-visible delegation tools are hidden.
+        return Arc::new(registry);
     }
 
     let parent_context = ChildRunContext {

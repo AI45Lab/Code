@@ -15,7 +15,9 @@ use std::sync::{Arc, RwLock};
 use super::capabilities::{
     build_session_capabilities, register_skill_capability, SessionCapabilityInput,
 };
-use super::session_config::{resolve_session_memory, resolve_session_store};
+use super::session_config::{
+    resolve_auto_delegation_config, resolve_session_memory, resolve_session_store,
+};
 use super::session_runtime::{build_session_runtime, SessionRuntimeInput};
 
 pub(super) fn prepare_session_options(agent: &Agent, opts: SessionOptions) -> SessionOptions {
@@ -135,13 +137,7 @@ pub(super) fn build_agent_session(
     let init_warning = resolved_memory.init_warning;
 
     let base = agent.config.clone();
-    let mut auto_delegation = opts
-        .auto_delegation
-        .clone()
-        .unwrap_or_else(|| base.auto_delegation.clone());
-    if let Some(auto_parallel) = opts.auto_parallel_delegation {
-        auto_delegation.auto_parallel = auto_parallel;
-    }
+    let auto_delegation = resolve_auto_delegation_config(&agent.code_config, opts);
     let config = AgentConfig {
         prompt_slots,
         tools: tool_defs,

@@ -55,6 +55,7 @@ impl std::fmt::Debug for SessionOptions {
             .field("max_tool_rounds", &self.max_tool_rounds)
             .field("max_parallel_tasks", &self.max_parallel_tasks)
             .field("auto_delegation", &self.auto_delegation)
+            .field("manual_delegation_enabled", &self.manual_delegation_enabled)
             .field("auto_parallel_delegation", &self.auto_parallel_delegation)
             .field("prompt_slots", &self.prompt_slots.is_some())
             .finish()
@@ -504,6 +505,20 @@ impl SessionOptions {
         let mut config = self.auto_delegation.take().unwrap_or_default();
         config.enabled = enabled;
         self.auto_delegation = Some(config);
+        self
+    }
+
+    /// Enable or disable model-visible manual child-agent tools for this session.
+    ///
+    /// When false, `task` and `parallel_task` are not registered in the session
+    /// tool surface. Worker agents remain registered for introspection and hosts
+    /// that manage them directly. This is for cost control or debugging; it is
+    /// not a security sandbox for the parent agent.
+    pub fn with_manual_delegation_enabled(mut self, enabled: bool) -> Self {
+        if let Some(config) = &mut self.auto_delegation {
+            config.allow_manual_delegation = enabled;
+        }
+        self.manual_delegation_enabled = Some(enabled);
         self
     }
 
