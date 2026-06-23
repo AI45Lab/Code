@@ -415,6 +415,7 @@ impl App {
                     &output,
                     metadata.as_ref(),
                     args.as_ref(),
+                    self.width as usize,
                 ));
                 self.tool_args.clear();
             }
@@ -602,8 +603,14 @@ async fn run_smoke(session: Arc<AgentSession>) -> anyhow::Result<()> {
             AgentEvent::TextDelta { text } => print!("{text}"),
             AgentEvent::ToolStart { name, .. } => eprintln!("\n[tool start] {name}"),
             AgentEvent::ToolEnd {
-                name, exit_code, ..
-            } => eprintln!("[tool end] {name} (exit {exit_code})"),
+                name,
+                exit_code,
+                output,
+                ..
+            } => eprintln!(
+                "[tool end] {name} (exit {exit_code}): {}",
+                output.lines().take(2).collect::<Vec<_>>().join(" | ")
+            ),
             AgentEvent::ConfirmationRequired {
                 tool_id, tool_name, ..
             } => {
@@ -629,6 +636,7 @@ fn render_tool_end(
     output: &str,
     meta: Option<&serde_json::Value>,
     args: Option<&serde_json::Value>,
+    width: usize,
 ) -> String {
     if let Some(meta) = meta {
         if let (Some(before), Some(after), Some(path)) = (
@@ -642,17 +650,63 @@ fn render_tool_end(
     let status = if exit_code == 0 { "✓" } else { "✗" };
     // Show the tool's primary argument (command/path/pattern) so the action log
     // reads like Codex — "✓ bash — npm test" rather than just "✓ bash".
-    let header = match args.and_then(arg_summary) {
-        Some(summary) => format!("  {status} {name} — {summary}"),
-        None => format!("  {status} {name}"),
-    };
-    let head = output.lines().take(6).collect::<Vec<_>>().join("\n");
-    let body = if head.trim().is_empty() {
-        header
-    } else {
-        format!("{header}\n{head}")
-    };
-    Style::new().fg(Color::BrightBlack).render(&body)
+    let header = Style::new()
+        .fg(Color::BrightBlack)
+        .render(&match args.and_then(arg_summary) {
+            Some(summary) => format!("  {status} {name} — {summary}"),
+            None => format!("  {status} {name}"),
+        });
+    let head = output.lines().take(8).collect::<Vec<_>>().join("\n");
+    if head.trim().is_empty() {
+        return header;
+    }
+    // If the output is file/code content (read/edit on a known extension),
+    // syntax-highlight it; otherwise show it dimmed.
+    if exit_code == 0 {
+        if let Some(lang) = args
+            .and_then(|a| {
+                a.get("file_path")
+                    .or_else(|| a.get("path"))
+                    .and_then(|v| v.as_str())
+            })
+            .and_then(lang_from_path)
+        {
+            let fenced = format!("```{lang}\n{head}\n```");
+            let rendered = a3s_tui::markdown::Markdown::new()
+                .with_width(width.saturating_sub(4).max(20))
+                .render(&fenced);
+            return format!("{header}\n{rendered}");
+        }
+    }
+    format!(
+        "{header}\n{}",
+        Style::new().fg(Color::BrightBlack).render(&head)
+    )
+}
+
+/// Map a file path to a syntect language token for fenced rendering.
+fn lang_from_path(path: &str) -> Option<&'static str> {
+    let ext = path.rsplit('.').next()?;
+    Some(match ext {
+        "rs" => "rust",
+        "py" => "python",
+        "js" | "mjs" | "cjs" => "javascript",
+        "ts" | "tsx" => "typescript",
+        "go" => "go",
+        "json" => "json",
+        "toml" => "toml",
+        "yaml" | "yml" => "yaml",
+        "md" => "markdown",
+        "sh" | "bash" => "bash",
+        "c" | "h" => "c",
+        "cpp" | "cc" | "hpp" => "cpp",
+        "java" => "java",
+        "rb" => "ruby",
+        "html" => "html",
+        "css" => "css",
+        "sql" => "sql",
+        _ => return None,
+    })
 }
 
 /// Extract a one-line summary of a tool's primary argument.
@@ -865,7 +919,7 @@ mod tests {
             "before": "let a = 1;\nkeep;\n",
             "after": "let a = 2;\nkeep;\n",
         });
-        let out = render_tool_end("edit", 0, "ok", Some(&meta), None);
+        let out = render_tool_end("edit", 0, "ok", Some(&meta), None, 80);
         assert!(out.contains("src/x.rs"), "header has path");
         assert!(out.contains("+1") && out.contains("-1"), "add/del counts");
         assert!(out.contains("let a = 2;"), "shows inserted line");
@@ -875,7 +929,7 @@ mod tests {
 
     #[test]
     fn non_edit_tool_renders_status_line() {
-        let out = render_tool_end("bash", 0, "hello\nworld", None, None);
+        let out = render_tool_end("bash", 0, "hello\nworld", None, None, 80);
         assert!(out.contains("bash") && out.contains("hello"));
         assert!(!out.contains('✎'), "no diff marker for non-edit tools");
     }
@@ -883,7 +937,7 @@ mod tests {
     #[test]
     fn tool_end_shows_primary_arg_summary() {
         let args = serde_json::json!({ "command": "npm test", "timeout": 60 });
-        let out = render_tool_end("bash", 0, "ok\n", None, Some(&args));
+        let out = render_tool_end("bash", 0, "ok\n", None, Some(&args), 80);
         assert!(out.contains("bash"));
         assert!(out.contains("npm test"), "shows the command argument");
     }
