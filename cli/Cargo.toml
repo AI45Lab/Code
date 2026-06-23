@@ -1,0 +1,22 @@
+# Standalone crate (own `[workspace]`) so it never gets pulled into a3s-code's
+# workspace — the a3s-tui path dep only resolves inside the a3s monorepo, and
+# this keeps a standalone clone of AI45Lab/Code building unchanged.
+[package]
+name = "a3s-code"
+version = "0.1.0"
+edition = "2021"
+description = "Codex-style terminal UI for the A3S Code agent"
+license = "MIT"
+default-run = "a3s-code"
+
+[[bin]]
+name = "a3s-code"
+path = "src/main.rs"
+
+[dependencies]
+a3s-code-core = { path = "../core" }
+a3s-tui = { path = "../../tui" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+anyhow = "1"
+
+[workspace]
