@@ -37,7 +37,7 @@ dependencies = [
 
 [[package]]
 name = "a3s-code-core"
-version = "4.0.0"
+version = "4.1.0"
 dependencies = [
  "a3s-acl 0.2.0",
  "a3s-ahp",
@@ -92,7 +92,7 @@ dependencies = [
 
 [[package]]
 name = "a3s-code-py"
-version = "4.0.0"
+version = "4.1.0"
 dependencies = [
  "a3s-code-core",
  "anyhow",
