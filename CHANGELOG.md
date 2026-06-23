@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.2.0] - 2026-06-23
+
+### Added
+
+- Native structured-output enforcement. `LlmClient` gains
+  `native_structured_support()`, `complete_structured()`, and
+  `complete_streaming_structured()` (all with non-breaking default impls). The
+  structured engine now forces the provider `tool_choice` for tool mode and
+  requests native `response_format` (`json_schema` / `json_object`) where the
+  provider supports it, instead of merely offering a tool the model could ignore.
+
+### Fixed
+
+- Stabilized JSON-object generation. Forced `tool_choice` on both the blocking
+  and streaming paths guarantees the model emits the structured object rather
+  than prose or malformed tool arguments.
+- Hardened the planner / pre-analysis JSON parsing: it now reuses the robust
+  shared extractor (markdown fences, surrounding prose, braces inside strings)
+  and adds one repair retry, replacing the previous naive first-`{`/last-`}`
+  slice that hard-errored on fenced or prose-wrapped output.
+
 ## [4.1.0] - 2026-06-23
 
 ### Changed
