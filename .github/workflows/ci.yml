@@ -37,3 +37,30 @@ jobs:
 
       # - name: Tests
       #   run: cargo test --workspace --lib
+
+  sdk-check:
+    name: SDK build check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup workspace context
+        run: bash .github/setup-workspace.sh
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      # The Node and Python SDKs are excluded from the core workspace and are
+      # otherwise only compiled at release time (napi / maturin). Type-check them
+      # here so a core change that breaks an SDK (e.g. a new struct field that an
+      # SDK constructs with a literal) fails on the PR instead of the release.
+      - name: Check Node SDK
+        run: cargo check --manifest-path sdk/node/Cargo.toml
+
+      - name: Check Python SDK
+        run: cargo check --manifest-path sdk/python/Cargo.toml
