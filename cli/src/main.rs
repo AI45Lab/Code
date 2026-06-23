@@ -59,6 +59,7 @@ enum Msg {
     ModalConfirm(usize),
     ModalDismiss,
     Resume,
+    Interrupted,
     Quit,
 }
 
@@ -95,6 +96,9 @@ struct App {
     textarea: Textarea,
     spinner: Spinner,
     streaming: StreamingMarkdown,
+    /// Live reasoning ("thinking") text for the current turn, shown dimmed above
+    /// the answer and cleared when the answer is finalized.
+    thinking: String,
     state: State,
     messages: Vec<String>,
     rx: Option<SharedRx>,
@@ -111,7 +115,7 @@ impl Model for App {
     fn init(&mut self) -> Option<Cmd<Msg>> {
         let welcome = Style::new().fg(Color::BrightBlack).italic().render(
             "  A3S Code — type a message and press Enter.\n  \
-             Ctrl+C quit | PageUp/PageDown scroll | /clear reset | /exit quit\n",
+             Esc interrupt | Ctrl+C quit | PgUp/PgDn scroll | /help\n",
         );
         self.viewport.set_content(&welcome);
         None
@@ -144,6 +148,15 @@ impl Model for App {
                     return None;
                 }
                 if self.state == State::Streaming {
+                    // Esc interrupts the in-progress run.
+                    if key.code == KeyCode::Esc {
+                        self.push_line(&Style::new().fg(Color::Yellow).render("  ⎋ interrupting…"));
+                        let session = self.session.clone();
+                        return Some(cmd::cmd(move || async move {
+                            session.cancel().await;
+                            Msg::Interrupted
+                        }));
+                    }
                     return None;
                 }
                 if let Some(TextareaMsg::Submit(text)) = self.textarea.handle_key(&key) {
@@ -224,7 +237,7 @@ impl Model for App {
         }
 
         let status_text = match self.state {
-            State::Streaming => format!(" {} working...", self.spinner.view()),
+            State::Streaming => format!(" {} working... (Esc interrupt)", self.spinner.view()),
             State::Idle => " a3s-code".to_string(),
             State::Awaiting => " awaiting approval...".to_string(),
         };
@@ -265,6 +278,16 @@ impl App {
                 self.rebuild_viewport();
                 return None;
             }
+            "/help" => {
+                self.messages
+                    .push(Style::new().fg(Color::BrightBlack).render(
+                        "  commands: /clear reset · /exit quit\n  \
+                     Enter send · Esc interrupt · Ctrl+C quit · PgUp/PgDn scroll",
+                    ));
+                self.textarea.clear();
+                self.rebuild_viewport();
+                return None;
+            }
             _ => {}
         }
 
@@ -297,6 +320,10 @@ impl App {
         match event {
             AgentEvent::TextDelta { text } => {
                 self.streaming.push(&text);
+                self.update_viewport_with_stream();
+            }
+            AgentEvent::ReasoningDelta { text } => {
+                self.thinking.push_str(&text);
                 self.update_viewport_with_stream();
             }
             AgentEvent::ToolStart { name, .. } => {
@@ -337,11 +364,17 @@ impl App {
                 );
                 return None; // wait for the user; do not pump
             }
-            AgentEvent::End { text, .. } => {
+            AgentEvent::End { text, usage, .. } => {
                 if self.streaming.raw_content().trim().is_empty() && !text.is_empty() {
                     self.streaming.push(&text);
                 }
                 self.finalize_streaming();
+                if usage.total_tokens > 0 {
+                    self.push_line(&Style::new().fg(Color::BrightBlack).render(&format!(
+                        "  ⏱ {} tokens (prompt {}, completion {})",
+                        usage.total_tokens, usage.prompt_tokens, usage.completion_tokens
+                    )));
+                }
                 self.finish();
                 return None;
             }
@@ -354,8 +387,8 @@ impl App {
                 self.finish();
                 return None;
             }
-            // TurnStart/TurnEnd, ToolInputDelta, ReasoningDelta, planning, memory,
-            // subagent, confirmation echoes, etc. — not surfaced in this MVP.
+            // TurnStart/TurnEnd, ToolInputDelta, planning, memory, subagent,
+            // confirmation echoes, etc. — not surfaced in this MVP.
             _ => {}
         }
         // Keep draining the stream.
@@ -368,6 +401,7 @@ impl App {
             self.messages.push(rendered);
         }
         self.streaming.clear();
+        self.thinking.clear();
         self.rebuild_viewport();
     }
 
@@ -384,15 +418,20 @@ impl App {
     }
 
     fn update_viewport_with_stream(&mut self) {
-        let mut full = self.messages.join("\n\n");
+        let mut blocks: Vec<String> = self.messages.clone();
+        if !self.thinking.trim().is_empty() {
+            blocks.push(
+                Style::new()
+                    .fg(Color::BrightBlack)
+                    .italic()
+                    .render(&format!("💭 {}", self.thinking.trim())),
+            );
+        }
         let rendered = self.streaming.view();
         if !rendered.is_empty() {
-            if !full.is_empty() {
-                full.push_str("\n\n");
-            }
-            full.push_str(&rendered);
+            blocks.push(rendered);
         }
-        self.viewport.set_content(&full);
+        self.viewport.set_content(&blocks.join("\n\n"));
     }
 
     fn rebuild_viewport(&mut self) {
@@ -513,6 +552,7 @@ async fn main() -> anyhow::Result<()> {
             .with_submit_on_enter(true),
         spinner: Spinner::new().with_title(""),
         streaming: StreamingMarkdown::new((width as usize).saturating_sub(2)),
+        thinking: String::new(),
         state: State::Idle,
         messages: Vec::new(),
         rx: None,
