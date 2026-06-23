@@ -170,6 +170,10 @@ pub(super) fn apply_persisted_runtime_options(
             opts = opts.with_permission_policy(policy);
         }
     }
+    if opts.enforce_active_skill_tool_restrictions.is_none() {
+        opts.enforce_active_skill_tool_restrictions =
+            Some(data.config.enforce_active_skill_tool_restrictions);
+    }
     if opts.max_parallel_tasks.is_none() {
         opts.max_parallel_tasks = data.config.max_parallel_tasks;
     }
@@ -271,6 +275,9 @@ async fn build_session_data_snapshot(input: SessionDataSnapshotInput<'_>) -> Ses
             queue_config: input.config.queue_config.clone(),
             confirmation_policy,
             permission_policy: input.config.permission_policy.clone(),
+            enforce_active_skill_tool_restrictions: input
+                .config
+                .enforce_active_skill_tool_restrictions,
             max_parallel_tasks: Some(input.config.max_parallel_tasks),
             auto_delegation: Some(input.config.auto_delegation.clone()),
             parent_id: None,

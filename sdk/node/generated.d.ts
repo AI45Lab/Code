@@ -413,6 +413,13 @@ export interface SessionOptions {
   builtinSkills?: boolean
   /** Extra directories to scan for skill files (.md with YAML frontmatter). */
   skillDirs?: Array<string>
+  /**
+   * Whether active skill allowed-tools restrict ordinary session tool calls.
+   *
+   * Defaults to false. Set true to restore the legacy global active-skill
+   * restriction before permission policy, hooks, HITL, or AHP run.
+   */
+  enforceActiveSkillToolRestrictions?: boolean
   /** Extra directories to scan for agent files. */
   agentDirs?: Array<string>
   /** Reproducible disposable workers to register for task delegation. */

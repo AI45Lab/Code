@@ -1112,8 +1112,7 @@ impl PyAgent {
             // serve_agent_dir returns Result and never panics by construction; a
             // scheduling error is reported, not propagated (spawned task bodies
             // are not panic-safe).
-            if let Err(e) =
-                rust_serve_agent_dir(&agent, &agent_dir, workspace, extra, cancel).await
+            if let Err(e) = rust_serve_agent_dir(&agent, &agent_dir, workspace, extra, cancel).await
             {
                 eprintln!("a3s-code: serve_agent_dir daemon exited with error: {e}");
             }
@@ -4824,6 +4823,7 @@ struct PySessionOptions {
     model: Option<String>,
     builtin_skills: bool,
     skill_dirs: Vec<String>,
+    enforce_active_skill_tool_restrictions: Option<bool>,
     agent_dirs: Vec<String>,
     worker_agents: Vec<PyWorkerAgentSpec>,
     queue_config: Option<PySessionQueueConfig>,
@@ -4967,6 +4967,7 @@ impl Clone for PySessionOptions {
             model: self.model.clone(),
             builtin_skills: self.builtin_skills,
             skill_dirs: self.skill_dirs.clone(),
+            enforce_active_skill_tool_restrictions: self.enforce_active_skill_tool_restrictions,
             agent_dirs: self.agent_dirs.clone(),
             worker_agents: self.worker_agents.clone(),
             queue_config: self.queue_config.clone(),
@@ -5035,6 +5036,7 @@ impl PySessionOptions {
             model: None,
             builtin_skills: false,
             skill_dirs: vec![],
+            enforce_active_skill_tool_restrictions: None,
             agent_dirs: vec![],
             worker_agents: vec![],
             queue_config: None,
@@ -5111,6 +5113,20 @@ impl PySessionOptions {
     #[setter]
     fn set_skill_dirs(&mut self, value: Vec<String>) {
         self.skill_dirs = value;
+    }
+
+    /// Whether active skill allowed-tools restrict ordinary session tool calls.
+    ///
+    /// Defaults to None/False. Set True to restore the legacy global
+    /// active-skill restriction before permission policy, hooks, HITL, or AHP run.
+    #[getter]
+    fn get_enforce_active_skill_tool_restrictions(&self) -> Option<bool> {
+        self.enforce_active_skill_tool_restrictions
+    }
+
+    #[setter]
+    fn set_enforce_active_skill_tool_restrictions(&mut self, value: Option<bool>) {
+        self.enforce_active_skill_tool_restrictions = value;
     }
 
     /// Extra directories to scan for agent files.
@@ -5869,6 +5885,9 @@ fn build_rust_session_options(so: PySessionOptions) -> PyResult<RustSessionOptio
     }
     for d in &so.skill_dirs {
         o = o.with_skills_from_dir(d);
+    }
+    if let Some(enabled) = so.enforce_active_skill_tool_restrictions {
+        o = o.with_active_skill_tool_restrictions(enabled);
     }
     for d in &so.agent_dirs {
         o = o.with_agent_dir(d);
@@ -7002,6 +7021,18 @@ mod tests {
         assert!(!auto.auto_parallel);
         assert!((auto.min_confidence - 0.8).abs() < f32::EPSILON);
         assert_eq!(auto.max_tasks, 2);
+    }
+
+    #[test]
+    fn session_options_map_active_skill_tool_restriction_control() {
+        let default_opts = build_rust_session_options(PySessionOptions::new()).unwrap();
+        assert_eq!(default_opts.enforce_active_skill_tool_restrictions, None);
+
+        let mut session_options = PySessionOptions::new();
+        session_options.enforce_active_skill_tool_restrictions = Some(true);
+
+        let opts = build_rust_session_options(session_options).unwrap();
+        assert_eq!(opts.enforce_active_skill_tool_restrictions, Some(true));
     }
 
     #[test]

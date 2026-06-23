@@ -127,6 +127,7 @@ impl AgentLoop {
                 args.clone(),
                 ctx.clone(),
                 self.config.skill_registry.clone(),
+                self.config.enforce_active_skill_tool_restrictions,
             );
             let rx = queue.submit_by_tool(name, Box::new(command)).await;
             match rx.await {

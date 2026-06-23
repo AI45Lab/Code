@@ -35,6 +35,10 @@ impl std::fmt::Debug for SessionOptions {
                     .as_ref()
                     .map(|r| format!("{} skills", r.len())),
             )
+            .field(
+                "enforce_active_skill_tool_restrictions",
+                &self.enforce_active_skill_tool_restrictions,
+            )
             .field("memory_store", &self.memory_store.is_some())
             .field("session_store", &self.session_store.is_some())
             .field("session_id", &self.session_id)
@@ -208,6 +212,15 @@ impl SessionOptions {
     /// Add a custom skill registry
     pub fn with_skill_registry(mut self, registry: Arc<crate::skills::SkillRegistry>) -> Self {
         self.skill_registry = Some(registry);
+        self
+    }
+
+    /// Enable or disable legacy global active-skill `allowed-tools` restrictions.
+    ///
+    /// The default is disabled: active skills do not block ordinary session
+    /// tools before the host permission/AHP/HITL approval chain runs.
+    pub fn with_active_skill_tool_restrictions(mut self, enabled: bool) -> Self {
+        self.enforce_active_skill_tool_restrictions = Some(enabled);
         self
     }
 

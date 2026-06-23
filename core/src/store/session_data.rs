@@ -46,6 +46,10 @@ pub(crate) fn default_auto_compact_threshold() -> f32 {
     DEFAULT_AUTO_COMPACT_THRESHOLD
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// Serializable session configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionConfig {
@@ -73,6 +77,9 @@ pub struct SessionConfig {
     /// Permission policy (optional, uses defaults if None).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub permission_policy: Option<crate::permissions::PermissionPolicy>,
+    /// Whether active skill `allowed-tools` restrict ordinary session tools.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub enforce_active_skill_tool_restrictions: bool,
     /// Maximum sibling branches/tools to run concurrently.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_parallel_tasks: Option<usize>,
@@ -109,6 +116,7 @@ impl Default for SessionConfig {
             queue_config: None,
             confirmation_policy: None,
             permission_policy: None,
+            enforce_active_skill_tool_restrictions: false,
             max_parallel_tasks: None,
             auto_delegation: None,
             parent_id: None,

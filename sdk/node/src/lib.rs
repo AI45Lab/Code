@@ -42,6 +42,7 @@ mod js_slash_command;
 use js_slash_command::{js_command_context_to_object, JsSlashCommand};
 
 use a3s_code_core::commands::CommandContext as RustCommandContext;
+use a3s_code_core::config::AgentDir as RustAgentDir;
 use a3s_code_core::config::{
     BrowserBackend as RustBrowserBackend, HeadlessConfig as RustHeadlessConfig,
     SearchConfig as RustSearchConfig, SearchEngineConfig as RustSearchEngineConfig,
@@ -70,6 +71,7 @@ use a3s_code_core::queue::{
     MetricsSnapshot as RustMetricsSnapshot, SessionLane as RustSessionLane,
     SessionQueueConfig as RustSessionQueueConfig, TaskHandlerMode as RustTaskHandlerMode,
 };
+use a3s_code_core::serve::serve_agent_dir as rust_serve_agent_dir;
 use a3s_code_core::skills::{builtin_skills as rust_builtin_skills, SkillKind as RustSkillKind};
 use a3s_code_core::subagent::{
     AgentDefinition as RustAgentDefinition, ModelConfig as RustAgentModelConfig,
@@ -80,8 +82,6 @@ use a3s_code_core::verification::{
     VerificationCommand as RustVerificationCommand, VerificationReport as RustVerificationReport,
     VerificationStatus as RustVerificationStatus, VerificationSummary as RustVerificationSummary,
 };
-use a3s_code_core::config::AgentDir as RustAgentDir;
-use a3s_code_core::serve::serve_agent_dir as rust_serve_agent_dir;
 use a3s_code_core::{
     Agent as RustAgent, AgentEvent as RustAgentEvent, AgentResult as RustAgentResult,
     AgentSession as RustAgentSession, PlanningMode as RustPlanningMode,
@@ -1783,6 +1783,11 @@ pub struct SessionOptions {
     pub builtin_skills: Option<bool>,
     /// Extra directories to scan for skill files (.md with YAML frontmatter).
     pub skill_dirs: Option<Vec<String>>,
+    /// Whether active skill allowed-tools restrict ordinary session tool calls.
+    ///
+    /// Defaults to false. Set true to restore the legacy global active-skill
+    /// restriction before permission policy, hooks, HITL, or AHP run.
+    pub enforce_active_skill_tool_restrictions: Option<bool>,
     /// Extra directories to scan for agent files.
     pub agent_dirs: Option<Vec<String>>,
     /// Reproducible disposable workers to register for task delegation.
@@ -2302,6 +2307,9 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> napi::Result<R
         for d in dirs {
             opts = opts.with_skills_from_dir(d);
         }
+    }
+    if let Some(enabled) = o.enforce_active_skill_tool_restrictions {
+        opts = opts.with_active_skill_tool_restrictions(enabled);
     }
     if let Some(dirs) = o.agent_dirs {
         for d in dirs {
@@ -6047,6 +6055,25 @@ mod tests {
         assert!(!auto.auto_parallel);
         assert!((auto.min_confidence - 0.8).abs() < f32::EPSILON);
         assert_eq!(auto.max_tasks, 2);
+    }
+
+    #[test]
+    fn session_options_maps_active_skill_tool_restriction_control() {
+        let default_opts = js_session_options_to_rust(Some(SessionOptions {
+            ..Default::default()
+        }))
+        .unwrap();
+        assert_eq!(default_opts.enforce_active_skill_tool_restrictions, None);
+
+        let legacy_opts = js_session_options_to_rust(Some(SessionOptions {
+            enforce_active_skill_tool_restrictions: Some(true),
+            ..Default::default()
+        }))
+        .unwrap();
+        assert_eq!(
+            legacy_opts.enforce_active_skill_tool_restrictions,
+            Some(true)
+        );
     }
 
     #[test]
