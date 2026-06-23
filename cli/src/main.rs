@@ -115,6 +115,11 @@ struct App {
     /// Accumulated streamed JSON args of the in-progress tool call, so the
     /// result line can show what the tool actually did (command/path/pattern).
     tool_args: String,
+    /// When true, tool-confirmation prompts are auto-approved (Codex-style
+    /// approval mode), toggled with `/auto`.
+    auto_approve: bool,
+    /// Working directory shown for context.
+    cwd: String,
     width: u16,
     height: u16,
     keymap: Keymap<Action>,
@@ -125,10 +130,14 @@ impl Model for App {
 
     fn init(&mut self) -> Option<Cmd<Msg>> {
         if self.messages.is_empty() {
-            let welcome = Style::new().fg(Color::BrightBlack).italic().render(
-                "  A3S Code — type a message and press Enter.\n  \
-                 Esc interrupt | Ctrl+C quit | PgUp/PgDn scroll | /help\n",
-            );
+            let welcome = Style::new()
+                .fg(Color::BrightBlack)
+                .italic()
+                .render(&format!(
+                    "  A3S Code — {}\n  Type a message and press Enter.\n  \
+                 ↑/↓ history · Esc interrupt · /help · Ctrl+C quit\n",
+                    self.cwd
+                ));
             self.viewport.set_content(&welcome);
         } else {
             // Resumed session — show the prior conversation, scrolled to the end.
@@ -325,9 +334,21 @@ impl App {
             "/help" => {
                 self.messages
                     .push(Style::new().fg(Color::BrightBlack).render(
-                        "  commands: /clear reset · /exit quit\n  \
+                        "  commands: /clear reset · /auto toggle auto-approve · /exit quit\n  \
                      Enter send · ↑/↓ history · Esc interrupt · Ctrl+C quit · PgUp/PgDn scroll",
                     ));
+                self.textarea.clear();
+                self.rebuild_viewport();
+                return None;
+            }
+            "/auto" => {
+                self.auto_approve = !self.auto_approve;
+                let state = if self.auto_approve { "on" } else { "off" };
+                self.messages.push(
+                    Style::new()
+                        .fg(Color::Yellow)
+                        .render(&format!("  ⚡ auto-approve: {state}")),
+                );
                 self.textarea.clear();
                 self.rebuild_viewport();
                 return None;
@@ -421,6 +442,21 @@ impl App {
                 args,
                 ..
             } => {
+                if self.auto_approve {
+                    self.push_line(
+                        &Style::new()
+                            .fg(Color::BrightBlack)
+                            .render(&format!("  ⚡ auto-approved {tool_name}")),
+                    );
+                    let session = self.session.clone();
+                    return Some(cmd::batch(vec![
+                        cmd::cmd(move || async move {
+                            let _ = session.confirm_tool_use(&tool_id, true, None).await;
+                            Msg::Resume
+                        }),
+                        spinner_tick(),
+                    ]));
+                }
                 self.state = State::Awaiting;
                 self.pending_tool = Some((tool_id, tool_name.clone()));
                 let pretty =
@@ -802,6 +838,8 @@ async fn main() -> anyhow::Result<()> {
         model: None,
         total_tokens: 0,
         tool_args: String::new(),
+        auto_approve: false,
+        cwd: workspace,
         width,
         height,
         keymap,
