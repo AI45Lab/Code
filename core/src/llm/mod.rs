@@ -48,6 +48,44 @@ pub trait LlmClient: Send + Sync {
         tools: &[ToolDefinition],
         cancel_token: CancellationToken,
     ) -> Result<mpsc::Receiver<StreamEvent>>;
+
+    /// Report the strongest provider-native structured-output enforcement this
+    /// client supports. Used by [`structured`] to decide whether to force a
+    /// tool call, request a native `response_format`, or fall back to
+    /// prompt-and-parse. Defaults to no native support.
+    fn native_structured_support(&self) -> structured::NativeStructuredSupport {
+        structured::NativeStructuredSupport::None
+    }
+
+    /// Complete a conversation while honoring a structured-output directive
+    /// (forced `tool_choice` and/or native `response_format`).
+    ///
+    /// The default implementation ignores the directive and behaves exactly
+    /// like [`LlmClient::complete`], so existing clients keep working unchanged;
+    /// providers that support native structured output override this.
+    async fn complete_structured(
+        &self,
+        messages: &[Message],
+        system: Option<&str>,
+        tools: &[ToolDefinition],
+        _directive: &structured::StructuredDirective,
+    ) -> Result<LlmResponse> {
+        self.complete(messages, system, tools).await
+    }
+
+    /// Streaming counterpart of [`LlmClient::complete_structured`]. Defaults to
+    /// [`LlmClient::complete_streaming`], ignoring the directive.
+    async fn complete_streaming_structured(
+        &self,
+        messages: &[Message],
+        system: Option<&str>,
+        tools: &[ToolDefinition],
+        _directive: &structured::StructuredDirective,
+        cancel_token: CancellationToken,
+    ) -> Result<mpsc::Receiver<StreamEvent>> {
+        self.complete_streaming(messages, system, tools, cancel_token)
+            .await
+    }
 }
 
 // Include test modules — these reference internal types via crate paths

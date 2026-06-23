@@ -54,6 +54,50 @@ pub struct StructuredResult {
     pub mode_used: StructuredMode,
 }
 
+/// Provider-native structured-output capability.
+///
+/// Each [`LlmClient`] reports this so the structured engine can request the
+/// strongest enforcement the provider actually supports. Defaults to
+/// [`NativeStructuredSupport::None`] for clients that don't override it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeStructuredSupport {
+    /// No native enforcement — rely on prompt instructions + lenient extraction.
+    None,
+    /// Can force a specific tool call (Anthropic `tool_choice`, OpenAI function
+    /// `tool_choice`). Guarantees the model emits the structured tool call
+    /// instead of free-form prose.
+    ForcedTool,
+    /// Supports OpenAI-style `response_format` (`json_object` and
+    /// `json_schema` + `strict`) in addition to forced tool calls.
+    JsonSchema,
+}
+
+/// A native `response_format` request for OpenAI-compatible providers.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ResponseFormat {
+    /// `{"type":"json_object"}` — guarantees syntactically valid JSON, but not
+    /// schema conformance.
+    JsonObject,
+    /// `{"type":"json_schema","json_schema":{name,schema,strict:true}}` —
+    /// parser-enforced schema conformance.
+    JsonSchema { name: String, schema: Value },
+}
+
+/// Instruction telling a provider how to enforce structured output for a call.
+///
+/// Carries the union of intents; each provider honors what it supports and
+/// ignores the rest (e.g. Anthropic has no `response_format`, so it only acts
+/// on `force_tool`). The default (`force_tool: None, response_format: None`)
+/// reproduces an ordinary completion, which is why the trait's default
+/// `complete_structured` impl is behavior-preserving.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct StructuredDirective {
+    /// Force the model to call exactly this tool (provider `tool_choice`).
+    pub force_tool: Option<String>,
+    /// Request a provider-native `response_format` (OpenAI-compatible only).
+    pub response_format: Option<ResponseFormat>,
+}
+
 /// Callback for streaming partial object snapshots.
 pub type PartialObjectCallback = Box<dyn Fn(&Value) + Send>;
 
@@ -69,17 +113,18 @@ pub async fn generate_blocking(
     client: &dyn LlmClient,
     req: &StructuredRequest,
 ) -> Result<StructuredResult> {
-    let mode = req.mode;
+    let mode = resolve_mode(req.mode, client.native_structured_support());
     let mut messages = build_initial_messages(req, mode);
     let system = build_system_prompt(req, mode);
     let tools = build_tools(req, mode);
+    let directive = build_directive(req, mode);
 
     let mut total_usage = TokenUsage::default();
     let mut repair_rounds: u8 = 0;
 
     loop {
         let resp = client
-            .complete(&messages, Some(&system), &tools)
+            .complete_structured(&messages, Some(&system), &tools, &directive)
             .await
             .context("LLM call failed during structured generation")?;
 
@@ -153,14 +198,15 @@ pub async fn generate_streaming(
     req: &StructuredRequest,
     on_partial: PartialObjectCallback,
 ) -> Result<StructuredResult> {
-    let mode = req.mode;
+    let mode = resolve_mode(req.mode, client.native_structured_support());
     let messages = build_initial_messages(req, mode);
     let system = build_system_prompt(req, mode);
     let tools = build_tools(req, mode);
+    let directive = build_directive(req, mode);
 
     let cancel_token = CancellationToken::new();
     let mut rx = client
-        .complete_streaming(&messages, Some(&system), &tools, cancel_token)
+        .complete_streaming_structured(&messages, Some(&system), &tools, &directive, cancel_token)
         .await
         .context("LLM streaming call failed during structured generation")?;
 
@@ -802,6 +848,50 @@ fn value_type_name(value: &Value) -> &'static str {
 // Message/prompt construction helpers
 // ---------------------------------------------------------------------------
 
+/// Resolve the requested mode against the provider's native capability.
+///
+/// `Auto`/`Tool` always resolve to forced `Tool` mode — the most reliable
+/// cross-provider strategy (the synthetic `emit_*` tool is made mandatory via
+/// the provider's `tool_choice`). `Strict`/`Json` use native `response_format`
+/// only when the provider reports [`NativeStructuredSupport::JsonSchema`];
+/// otherwise they fall back to forced `Tool` mode rather than silently
+/// degrading to unconstrained text.
+fn resolve_mode(requested: StructuredMode, support: NativeStructuredSupport) -> StructuredMode {
+    match requested {
+        StructuredMode::Prompt => StructuredMode::Prompt,
+        StructuredMode::Strict if support == NativeStructuredSupport::JsonSchema => {
+            StructuredMode::Strict
+        }
+        StructuredMode::Json if support == NativeStructuredSupport::JsonSchema => {
+            StructuredMode::Json
+        }
+        // Auto, Tool, or Strict/Json on a provider without json_schema support.
+        _ => StructuredMode::Tool,
+    }
+}
+
+/// Build the provider directive for an already-resolved mode.
+fn build_directive(req: &StructuredRequest, mode: StructuredMode) -> StructuredDirective {
+    match mode {
+        StructuredMode::Tool => StructuredDirective {
+            force_tool: Some(format!("emit_{}", req.schema_name)),
+            response_format: None,
+        },
+        StructuredMode::Strict => StructuredDirective {
+            force_tool: None,
+            response_format: Some(ResponseFormat::JsonSchema {
+                name: req.schema_name.clone(),
+                schema: req.schema.clone(),
+            }),
+        },
+        StructuredMode::Json => StructuredDirective {
+            force_tool: None,
+            response_format: Some(ResponseFormat::JsonObject),
+        },
+        StructuredMode::Auto | StructuredMode::Prompt => StructuredDirective::default(),
+    }
+}
+
 fn build_initial_messages(req: &StructuredRequest, mode: StructuredMode) -> Vec<Message> {
     match mode {
         StructuredMode::Tool => {
@@ -809,8 +899,10 @@ fn build_initial_messages(req: &StructuredRequest, mode: StructuredMode) -> Vec<
             // with a tool call whose input is the structured object.
             vec![Message::user(&req.prompt)]
         }
-        StructuredMode::Prompt => {
-            // Append schema instructions to the user prompt
+        StructuredMode::Prompt | StructuredMode::Json => {
+            // Prompt mode and json_object mode both need the schema in the prompt:
+            // json_object only guarantees *syntactic* validity, so the model still
+            // has to be told the shape it should produce.
             let augmented = format!(
                 "{}\n\nYou MUST respond with ONLY a valid JSON object (no markdown, no explanation) that conforms to this JSON Schema:\n\n```json\n{}\n```",
                 req.prompt,
@@ -819,8 +911,8 @@ fn build_initial_messages(req: &StructuredRequest, mode: StructuredMode) -> Vec<
             vec![Message::user(&augmented)]
         }
         _ => {
-            // Strict/Json modes: the schema constraint is enforced by the provider,
-            // so the user message is just the prompt.
+            // Strict mode: the schema constraint is enforced by the provider via
+            // response_format.json_schema, so the user message is just the prompt.
             vec![Message::user(&req.prompt)]
         }
     }
@@ -838,7 +930,7 @@ fn build_system_prompt(req: &StructuredRequest, mode: StructuredMode) -> String 
                 req.schema_name
             )
         }
-        StructuredMode::Prompt => {
+        StructuredMode::Prompt | StructuredMode::Json => {
             format!(
                 "{}{}You are a structured data extraction assistant. Always respond with valid JSON only, no markdown fences, no explanation text.",
                 base,

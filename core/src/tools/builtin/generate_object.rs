@@ -145,16 +145,10 @@ impl Tool for GenerateObjectTool {
             _ => StructuredMode::Auto,
         };
 
-        // Resolve mode: Auto → Tool (safest cross-provider default).
-        // Strict/Json modes require provider-level response_format support which
-        // is not yet wired — fall back to Tool mode to avoid silent degradation.
-        let resolved_mode = match mode {
-            StructuredMode::Auto | StructuredMode::Strict | StructuredMode::Json => {
-                StructuredMode::Tool
-            }
-            other => other,
-        };
-
+        // Mode resolution is delegated to the structured engine, which inspects
+        // the client's native capability: Auto/Tool become forced tool calls,
+        // and Strict/Json use native `response_format` when the provider
+        // supports it (falling back to forced Tool mode otherwise).
         let max_repair_attempts = args
             .get("max_repair_attempts")
             .and_then(|v| v.as_u64())
@@ -167,7 +161,7 @@ impl Tool for GenerateObjectTool {
             schema,
             schema_name,
             schema_description,
-            mode: resolved_mode,
+            mode,
             max_repair_attempts,
         };
 

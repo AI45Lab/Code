@@ -1,6 +1,7 @@
 //! Anthropic Claude LLM client
 
 use super::http::{default_http_client, normalize_base_url, HttpClient};
+use super::structured;
 use super::types::*;
 use super::LlmClient;
 use crate::retry::{AttemptOutcome, RetryConfig};
@@ -152,17 +153,24 @@ impl AnthropicClient {
     }
 }
 
-#[async_trait]
-impl LlmClient for AnthropicClient {
-    async fn complete(
-        &self,
-        messages: &[Message],
-        system: Option<&str>,
-        tools: &[ToolDefinition],
-    ) -> Result<LlmResponse> {
+impl AnthropicClient {
+    /// Apply a structured-output directive to an Anthropic request.
+    ///
+    /// Anthropic supports forced tool choice (`tool_choice`) but has no
+    /// `response_format`, so only `force_tool` is honored.
+    fn apply_directive(
+        request: &mut serde_json::Value,
+        directive: &structured::StructuredDirective,
+    ) {
+        if let Some(tool) = &directive.force_tool {
+            request["tool_choice"] = serde_json::json!({ "type": "tool", "name": tool });
+        }
+    }
+
+    /// Execute a fully-built (non-streaming) request body.
+    async fn send_request(&self, request_body: serde_json::Value) -> Result<LlmResponse> {
         {
             let request_started_at = Instant::now();
-            let request_body = self.build_request(messages, system, tools);
             let url = format!("{}/v1/messages", self.base_url);
 
             let headers = vec![
@@ -258,6 +266,35 @@ impl LlmClient for AnthropicClient {
 
             Ok(llm_response)
         }
+    }
+}
+
+#[async_trait]
+impl LlmClient for AnthropicClient {
+    async fn complete(
+        &self,
+        messages: &[Message],
+        system: Option<&str>,
+        tools: &[ToolDefinition],
+    ) -> Result<LlmResponse> {
+        self.send_request(self.build_request(messages, system, tools))
+            .await
+    }
+
+    async fn complete_structured(
+        &self,
+        messages: &[Message],
+        system: Option<&str>,
+        tools: &[ToolDefinition],
+        directive: &structured::StructuredDirective,
+    ) -> Result<LlmResponse> {
+        let mut request_body = self.build_request(messages, system, tools);
+        Self::apply_directive(&mut request_body, directive);
+        self.send_request(request_body).await
+    }
+
+    fn native_structured_support(&self) -> structured::NativeStructuredSupport {
+        structured::NativeStructuredSupport::ForcedTool
     }
 
     async fn complete_streaming(
@@ -738,5 +775,41 @@ mod tests {
 
         assert_eq!(req["max_tokens"], 16_000);
         assert_eq!(req["thinking"]["budget_tokens"], 8_000);
+    }
+
+    #[test]
+    fn test_apply_directive_forces_tool_choice() {
+        let mut req = serde_json::json!({ "model": "m", "messages": [] });
+        let directive = structured::StructuredDirective {
+            force_tool: Some("emit_person".to_string()),
+            response_format: None,
+        };
+        AnthropicClient::apply_directive(&mut req, &directive);
+        assert_eq!(req["tool_choice"]["type"], "tool");
+        assert_eq!(req["tool_choice"]["name"], "emit_person");
+    }
+
+    #[test]
+    fn test_apply_directive_ignores_response_format() {
+        // Anthropic has no response_format; both a response_format-only and an
+        // empty directive must be no-ops.
+        let mut req = serde_json::json!({ "model": "m" });
+        AnthropicClient::apply_directive(
+            &mut req,
+            &structured::StructuredDirective {
+                force_tool: None,
+                response_format: Some(structured::ResponseFormat::JsonObject),
+            },
+        );
+        assert!(req.get("response_format").is_none());
+        assert!(req.get("tool_choice").is_none());
+    }
+
+    #[test]
+    fn test_native_structured_support_is_forced_tool() {
+        assert_eq!(
+            make_client().native_structured_support(),
+            structured::NativeStructuredSupport::ForcedTool
+        );
     }
 }

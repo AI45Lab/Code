@@ -4,6 +4,7 @@
 //! This client wraps `OpenAiClient` with the correct GLM defaults.
 
 use super::openai::OpenAiClient;
+use super::structured;
 use super::types::*;
 use super::LlmClient;
 use crate::retry::RetryConfig;
@@ -77,6 +78,35 @@ impl LlmClient for ZhipuClient {
     ) -> Result<mpsc::Receiver<StreamEvent>> {
         self.0
             .complete_streaming(messages, system, tools, cancel_token)
+            .await
+    }
+
+    fn native_structured_support(&self) -> structured::NativeStructuredSupport {
+        self.0.native_structured_support()
+    }
+
+    async fn complete_structured(
+        &self,
+        messages: &[Message],
+        system: Option<&str>,
+        tools: &[ToolDefinition],
+        directive: &structured::StructuredDirective,
+    ) -> Result<LlmResponse> {
+        self.0
+            .complete_structured(messages, system, tools, directive)
+            .await
+    }
+
+    async fn complete_streaming_structured(
+        &self,
+        messages: &[Message],
+        system: Option<&str>,
+        tools: &[ToolDefinition],
+        directive: &structured::StructuredDirective,
+        cancel_token: CancellationToken,
+    ) -> Result<mpsc::Receiver<StreamEvent>> {
+        self.0
+            .complete_streaming_structured(messages, system, tools, directive, cancel_token)
             .await
     }
 }

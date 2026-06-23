@@ -215,19 +215,41 @@ impl LlmPlanner {
     pub async fn pre_analyze(llm: &Arc<dyn LlmClient>, prompt: &str) -> Result<PreAnalysis> {
         let system = crate::prompts::PRE_ANALYSIS_SYSTEM;
 
-        let messages = vec![Message::user(prompt)];
-        let response = llm
-            .complete(&messages, Some(system), &[])
-            .await
-            .context("LLM pre-analysis call failed")?;
+        // One initial attempt plus one repair round: if the model returns
+        // unparseable JSON, re-prompt it once to emit strictly valid JSON before
+        // giving up (callers fall back to heuristics on the returned error).
+        const MAX_ATTEMPTS: usize = 2;
+        let mut messages = vec![Message::user(prompt)];
+        let mut last_err: Option<anyhow::Error> = None;
 
-        let text = response.text();
-        Self::parse_pre_analysis_response(&text, prompt)
+        for attempt in 0..MAX_ATTEMPTS {
+            let response = llm
+                .complete(&messages, Some(system), &[])
+                .await
+                .context("LLM pre-analysis call failed")?;
+
+            let text = response.text();
+            match Self::parse_pre_analysis_response(&text, prompt) {
+                Ok(analysis) => return Ok(analysis),
+                Err(e) => {
+                    last_err = Some(e);
+                    if attempt + 1 < MAX_ATTEMPTS {
+                        messages.push(response.message.clone());
+                        messages.push(Message::user(
+                            "Your previous response was not valid JSON matching the required \
+                             schema. Respond again with ONLY the JSON object — no markdown \
+                             fences, no prose, no explanation.",
+                        ));
+                    }
+                }
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("pre-analysis produced no result")))
     }
 
     fn parse_pre_analysis_response(text: &str, original_prompt: &str) -> Result<PreAnalysis> {
-        let cleaned = Self::extract_json(text);
-        let parsed: PreAnalysisResponse = serde_json::from_str(cleaned)
+        let parsed: PreAnalysisResponse = Self::parse_json_lenient(text)
             .context("Failed to parse pre-analysis JSON from LLM response")?;
 
         let intent = match parsed.intent.to_lowercase().as_str() {
@@ -286,9 +308,8 @@ impl LlmPlanner {
     // ========================================================================
 
     fn parse_plan_response(text: &str) -> Result<ExecutionPlan> {
-        let cleaned = Self::extract_json(text);
-        let parsed: PlanResponse =
-            serde_json::from_str(cleaned).context("Failed to parse plan JSON from LLM response")?;
+        let parsed: PlanResponse = Self::parse_json_lenient(text)
+            .context("Failed to parse plan JSON from LLM response")?;
 
         let complexity = match parsed.complexity.as_str() {
             "Simple" => Complexity::Simple,
@@ -322,16 +343,14 @@ impl LlmPlanner {
     }
 
     fn parse_goal_response(text: &str) -> Result<AgentGoal> {
-        let cleaned = Self::extract_json(text);
-        let parsed: GoalResponse =
-            serde_json::from_str(cleaned).context("Failed to parse goal JSON from LLM response")?;
+        let parsed: GoalResponse = Self::parse_json_lenient(text)
+            .context("Failed to parse goal JSON from LLM response")?;
 
         Ok(AgentGoal::new(parsed.description).with_criteria(parsed.success_criteria))
     }
 
     fn parse_achievement_response(text: &str) -> Result<AchievementResult> {
-        let cleaned = Self::extract_json(text);
-        let parsed: AchievementResponse = serde_json::from_str(cleaned)
+        let parsed: AchievementResponse = Self::parse_json_lenient(text)
             .context("Failed to parse achievement JSON from LLM response")?;
 
         Ok(AchievementResult {
@@ -341,20 +360,15 @@ impl LlmPlanner {
         })
     }
 
-    /// Extract JSON from LLM text that may contain markdown fences
-    fn extract_json(text: &str) -> &str {
-        let trimmed = text.trim();
-
-        // Strip markdown code fences if present
-        if let Some(start) = trimmed.find('{') {
-            if let Some(end) = trimmed.rfind('}') {
-                if start <= end {
-                    return &trimmed[start..=end];
-                }
-            }
-        }
-
-        trimmed
+    /// Parse JSON from possibly-dirty LLM output into the target type.
+    ///
+    /// Uses the shared robust extractor ([`crate::llm::structured::extract_json_value`]),
+    /// which handles ```json fences, surrounding prose, and braces embedded in
+    /// strings — unlike the previous naive first-`{`/last-`}` slice, which broke
+    /// on fenced output or any `}` inside a string value.
+    fn parse_json_lenient<T: serde::de::DeserializeOwned>(text: &str) -> Result<T> {
+        let value = crate::llm::structured::extract_json_value(text)?;
+        Ok(serde_json::from_value(value)?)
     }
 }
 
@@ -521,19 +535,125 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_json_plain() {
-        assert_eq!(LlmPlanner::extract_json("  {\"a\": 1}  "), "{\"a\": 1}");
+    fn test_parse_json_lenient_plain() {
+        let v: serde_json::Value = LlmPlanner::parse_json_lenient("  {\"a\": 1}  ").unwrap();
+        assert_eq!(v["a"], 1);
     }
 
     #[test]
-    fn test_extract_json_with_fences() {
+    fn test_parse_json_lenient_with_fences() {
         let text = "```json\n{\"a\": 1}\n```";
-        assert_eq!(LlmPlanner::extract_json(text), "{\"a\": 1}");
+        let v: serde_json::Value = LlmPlanner::parse_json_lenient(text).unwrap();
+        assert_eq!(v["a"], 1);
     }
 
     #[test]
-    fn test_extract_json_with_surrounding_text() {
+    fn test_parse_json_lenient_with_surrounding_prose() {
         let text = "Here is the plan:\n{\"goal\": \"test\"}\nDone.";
-        assert_eq!(LlmPlanner::extract_json(text), "{\"goal\": \"test\"}");
+        let v: serde_json::Value = LlmPlanner::parse_json_lenient(text).unwrap();
+        assert_eq!(v["goal"], "test");
+    }
+
+    #[test]
+    fn test_parse_json_lenient_brace_inside_string_value() {
+        // The old naive first-`{`/last-`}` slice broke when a string value
+        // contained a `}` followed by trailing prose; the robust extractor
+        // balances braces while respecting string boundaries.
+        let text = "Result: {\"note\": \"use a closing brace } here\"} -- end.";
+        let v: serde_json::Value = LlmPlanner::parse_json_lenient(text).unwrap();
+        assert_eq!(v["note"], "use a closing brace } here");
+    }
+
+    #[test]
+    fn test_parse_json_lenient_fenced_with_trailing_prose() {
+        // ```json fence followed by an explanation. The naive parser's
+        // `rfind('}')` could grab a brace from the trailing prose.
+        let text = "```json\n{\"goal\": \"ship\"}\n```\nNote: revisit the `plan` later.";
+        let v: serde_json::Value = LlmPlanner::parse_json_lenient(text).unwrap();
+        assert_eq!(v["goal"], "ship");
+    }
+
+    #[test]
+    fn test_parse_json_lenient_rejects_non_json() {
+        let err = LlmPlanner::parse_json_lenient::<serde_json::Value>("no json here at all");
+        assert!(err.is_err());
+    }
+
+    /// Replays a fixed sequence of assistant text responses, one per call.
+    struct ReplayClient {
+        responses: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl ReplayClient {
+        fn new(responses: Vec<String>) -> Self {
+            Self {
+                responses: std::sync::Mutex::new(responses),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LlmClient for ReplayClient {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[crate::llm::ToolDefinition],
+        ) -> anyhow::Result<crate::llm::LlmResponse> {
+            let text = {
+                let mut r = self.responses.lock().unwrap();
+                if r.is_empty() {
+                    String::new()
+                } else {
+                    r.remove(0)
+                }
+            };
+            Ok(crate::llm::LlmResponse {
+                message: Message {
+                    role: "assistant".to_string(),
+                    content: vec![crate::llm::ContentBlock::Text { text }],
+                    reasoning_content: None,
+                },
+                usage: crate::llm::TokenUsage::default(),
+                stop_reason: None,
+                meta: None,
+            })
+        }
+
+        async fn complete_streaming(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[crate::llm::ToolDefinition],
+            _cancel_token: tokio_util::sync::CancellationToken,
+        ) -> anyhow::Result<tokio::sync::mpsc::Receiver<crate::llm::StreamEvent>> {
+            anyhow::bail!("streaming not used in planner tests")
+        }
+    }
+
+    #[tokio::test]
+    async fn test_pre_analyze_repairs_invalid_json() {
+        // First response is unparseable; pre_analyze must re-prompt and succeed
+        // on the second (valid) response.
+        let good = r#"{"intent":"explore","requires_planning":false,"goal":{"description":"Do x","success_criteria":["done"]},"execution_plan":{"complexity":"Simple","steps":[],"required_tools":[]},"optimized_input":"Do x carefully"}"#;
+        let client: Arc<dyn LlmClient> = Arc::new(ReplayClient::new(vec![
+            "Sorry — here's the plan, but not as JSON.".to_string(),
+            good.to_string(),
+        ]));
+        let pa = LlmPlanner::pre_analyze(&client, "do x").await.unwrap();
+        assert_eq!(pa.optimized_input, "Do x carefully");
+    }
+
+    #[tokio::test]
+    async fn test_pre_analyze_first_try_with_fenced_json() {
+        // A single ```json-fenced response must parse on the first attempt
+        // (robust extractor), with no repair round needed.
+        let good = format!(
+            "```json\n{}\n```",
+            r#"{"intent":"plan","requires_planning":true,"goal":{"description":"g","success_criteria":[]},"execution_plan":{"complexity":"Medium","steps":[],"required_tools":[]},"optimized_input":"opt"}"#
+        );
+        let client: Arc<dyn LlmClient> = Arc::new(ReplayClient::new(vec![good]));
+        let pa = LlmPlanner::pre_analyze(&client, "do x").await.unwrap();
+        assert_eq!(pa.optimized_input, "opt");
     }
 }

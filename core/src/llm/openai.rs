@@ -1,6 +1,7 @@
 //! OpenAI-compatible LLM client
 
 use super::http::{default_http_client, normalize_base_url, HttpClient};
+use super::structured;
 use super::types::*;
 use super::LlmClient;
 use crate::llm::types::{ToolResultContent, ToolResultContentField};
@@ -282,43 +283,80 @@ impl OpenAiClient {
     }
 }
 
-#[async_trait]
-impl LlmClient for OpenAiClient {
-    async fn complete(
+impl OpenAiClient {
+    /// Apply a structured-output directive to an OpenAI-compatible request.
+    ///
+    /// OpenAI-compatible APIs support both forced function `tool_choice` and
+    /// native `response_format` (`json_object` / `json_schema` + `strict`).
+    fn apply_directive(
+        request: &mut serde_json::Value,
+        directive: &structured::StructuredDirective,
+    ) {
+        if let Some(tool) = &directive.force_tool {
+            request["tool_choice"] = serde_json::json!({
+                "type": "function",
+                "function": { "name": tool }
+            });
+        }
+        if let Some(rf) = &directive.response_format {
+            request["response_format"] = match rf {
+                structured::ResponseFormat::JsonObject => {
+                    serde_json::json!({ "type": "json_object" })
+                }
+                structured::ResponseFormat::JsonSchema { name, schema } => serde_json::json!({
+                    "type": "json_schema",
+                    "json_schema": { "name": name, "schema": schema, "strict": true }
+                }),
+            };
+        }
+    }
+
+    /// Build a chat-completions request body, optionally applying a directive.
+    fn build_chat_request(
         &self,
         messages: &[Message],
         system: Option<&str>,
         tools: &[ToolDefinition],
-    ) -> Result<LlmResponse> {
+        directive: Option<&structured::StructuredDirective>,
+    ) -> serde_json::Value {
+        let mut openai_messages = Vec::new();
+
+        if let Some(sys) = system {
+            openai_messages.push(serde_json::json!({
+                "role": "system",
+                "content": sys,
+            }));
+        }
+
+        openai_messages.extend(self.convert_messages(messages));
+
+        let mut request = serde_json::json!({
+            "model": self.model,
+            "messages": openai_messages,
+        });
+
+        if let Some(temp) = self.temperature {
+            request["temperature"] = serde_json::json!(temp);
+        }
+        if let Some(max) = self.max_tokens {
+            request["max_tokens"] = serde_json::json!(max);
+        }
+
+        if !tools.is_empty() {
+            request["tools"] = serde_json::json!(self.convert_tools(tools));
+        }
+
+        if let Some(directive) = directive {
+            Self::apply_directive(&mut request, directive);
+        }
+
+        request
+    }
+
+    /// Execute a fully-built (non-streaming) chat-completions request.
+    async fn send_request(&self, request: serde_json::Value) -> Result<LlmResponse> {
         {
             let request_started_at = Instant::now();
-            let mut openai_messages = Vec::new();
-
-            if let Some(sys) = system {
-                openai_messages.push(serde_json::json!({
-                    "role": "system",
-                    "content": sys,
-                }));
-            }
-
-            openai_messages.extend(self.convert_messages(messages));
-
-            let mut request = serde_json::json!({
-                "model": self.model,
-                "messages": openai_messages,
-            });
-
-            if let Some(temp) = self.temperature {
-                request["temperature"] = serde_json::json!(temp);
-            }
-            if let Some(max) = self.max_tokens {
-                request["max_tokens"] = serde_json::json!(max);
-            }
-
-            if !tools.is_empty() {
-                request["tools"] = serde_json::json!(self.convert_tools(tools));
-            }
-
             let url = format!("{}{}", self.base_url, self.chat_completions_path);
             let request_headers = self.request_headers();
 
@@ -441,6 +479,34 @@ impl LlmClient for OpenAiClient {
 
             Ok(llm_response)
         }
+    }
+}
+
+#[async_trait]
+impl LlmClient for OpenAiClient {
+    async fn complete(
+        &self,
+        messages: &[Message],
+        system: Option<&str>,
+        tools: &[ToolDefinition],
+    ) -> Result<LlmResponse> {
+        self.send_request(self.build_chat_request(messages, system, tools, None))
+            .await
+    }
+
+    async fn complete_structured(
+        &self,
+        messages: &[Message],
+        system: Option<&str>,
+        tools: &[ToolDefinition],
+        directive: &structured::StructuredDirective,
+    ) -> Result<LlmResponse> {
+        self.send_request(self.build_chat_request(messages, system, tools, Some(directive)))
+            .await
+    }
+
+    fn native_structured_support(&self) -> structured::NativeStructuredSupport {
+        structured::NativeStructuredSupport::JsonSchema
     }
 
     async fn complete_streaming(
@@ -1106,4 +1172,100 @@ pub(crate) struct OpenAiToolCallDelta {
 pub(crate) struct OpenAiFunctionDelta {
     pub(crate) name: Option<String>,
     pub(crate) arguments: Option<String>,
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::llm::types::{Message, ToolDefinition};
+
+    fn make_client() -> OpenAiClient {
+        OpenAiClient::new("test-key".to_string(), "gpt-test".to_string())
+    }
+
+    #[test]
+    fn test_apply_directive_forced_function_tool_choice() {
+        let mut req = serde_json::json!({ "model": "m" });
+        OpenAiClient::apply_directive(
+            &mut req,
+            &structured::StructuredDirective {
+                force_tool: Some("emit_person".to_string()),
+                response_format: None,
+            },
+        );
+        assert_eq!(req["tool_choice"]["type"], "function");
+        assert_eq!(req["tool_choice"]["function"]["name"], "emit_person");
+        assert!(req.get("response_format").is_none());
+    }
+
+    #[test]
+    fn test_apply_directive_json_schema_strict() {
+        let mut req = serde_json::json!({});
+        OpenAiClient::apply_directive(
+            &mut req,
+            &structured::StructuredDirective {
+                force_tool: None,
+                response_format: Some(structured::ResponseFormat::JsonSchema {
+                    name: "person".to_string(),
+                    schema: serde_json::json!({ "type": "object" }),
+                }),
+            },
+        );
+        assert_eq!(req["response_format"]["type"], "json_schema");
+        assert_eq!(req["response_format"]["json_schema"]["name"], "person");
+        assert_eq!(req["response_format"]["json_schema"]["strict"], true);
+        assert!(req.get("tool_choice").is_none());
+    }
+
+    #[test]
+    fn test_apply_directive_json_object() {
+        let mut req = serde_json::json!({});
+        OpenAiClient::apply_directive(
+            &mut req,
+            &structured::StructuredDirective {
+                force_tool: None,
+                response_format: Some(structured::ResponseFormat::JsonObject),
+            },
+        );
+        assert_eq!(req["response_format"]["type"], "json_object");
+    }
+
+    #[test]
+    fn test_build_chat_request_applies_directive_and_system() {
+        let req = make_client().build_chat_request(
+            &[Message::user("hi")],
+            Some("sys"),
+            &[ToolDefinition {
+                name: "emit_x".to_string(),
+                description: "emit".to_string(),
+                parameters: serde_json::json!({ "type": "object" }),
+            }],
+            Some(&structured::StructuredDirective {
+                force_tool: Some("emit_x".to_string()),
+                response_format: None,
+            }),
+        );
+        assert_eq!(req["messages"][0]["role"], "system");
+        assert_eq!(req["tool_choice"]["function"]["name"], "emit_x");
+        assert_eq!(req["tools"][0]["function"]["name"], "emit_x");
+    }
+
+    #[test]
+    fn test_build_chat_request_without_directive_is_plain() {
+        let req = make_client().build_chat_request(&[Message::user("hi")], None, &[], None);
+        assert!(req.get("tool_choice").is_none());
+        assert!(req.get("response_format").is_none());
+    }
+
+    #[test]
+    fn test_native_structured_support_is_json_schema() {
+        assert_eq!(
+            make_client().native_structured_support(),
+            structured::NativeStructuredSupport::JsonSchema
+        );
+    }
 }

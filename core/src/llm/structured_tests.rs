@@ -1322,3 +1322,256 @@ async fn test_integration_generate_complex_nested_schema() {
         error["code"], result.repair_rounds
     );
 }
+
+// ========================================================================
+// Native structured-output routing (capability + directive) tests
+//
+// These verify the core stability fix: the structured engine resolves the
+// mode against the client's native capability and passes the correct
+// directive (forced tool_choice vs. response_format) to complete_structured.
+// ========================================================================
+
+/// A client that records the directive + tool surface it was asked to honor,
+/// and reports a configurable native capability.
+struct RecordingClient {
+    support: NativeStructuredSupport,
+    responses: Mutex<Vec<LlmResponse>>,
+    last_directive: Mutex<Option<StructuredDirective>>,
+    last_tool_names: Mutex<Vec<String>>,
+    structured_calls: std::sync::atomic::AtomicUsize,
+}
+
+impl RecordingClient {
+    fn new(support: NativeStructuredSupport, responses: Vec<LlmResponse>) -> Self {
+        Self {
+            support,
+            responses: Mutex::new(responses),
+            last_directive: Mutex::new(None),
+            last_tool_names: Mutex::new(Vec::new()),
+            structured_calls: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    fn pop(&self) -> anyhow::Result<LlmResponse> {
+        let mut responses = self.responses.lock().unwrap();
+        if responses.is_empty() {
+            anyhow::bail!("No more mock responses");
+        }
+        Ok(responses.remove(0))
+    }
+}
+
+#[async_trait]
+impl LlmClient for RecordingClient {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+    ) -> anyhow::Result<LlmResponse> {
+        self.pop()
+    }
+
+    async fn complete_streaming(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+        _cancel_token: CancellationToken,
+    ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
+        anyhow::bail!("streaming not used in routing tests")
+    }
+
+    fn native_structured_support(&self) -> NativeStructuredSupport {
+        self.support
+    }
+
+    async fn complete_structured(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        tools: &[ToolDefinition],
+        directive: &StructuredDirective,
+    ) -> anyhow::Result<LlmResponse> {
+        self.structured_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        *self.last_directive.lock().unwrap() = Some(directive.clone());
+        *self.last_tool_names.lock().unwrap() = tools.iter().map(|t| t.name.clone()).collect();
+        self.pop()
+    }
+}
+
+fn person_request(mode: StructuredMode) -> StructuredRequest {
+    StructuredRequest {
+        prompt: "Extract the person".to_string(),
+        system: None,
+        schema: serde_json::json!({
+            "type": "object",
+            "required": ["name"],
+            "properties": { "name": { "type": "string" } }
+        }),
+        schema_name: "person".to_string(),
+        schema_description: None,
+        mode,
+        max_repair_attempts: 0,
+    }
+}
+
+#[tokio::test]
+async fn test_routing_tool_mode_forces_tool_choice() {
+    let client = RecordingClient::new(
+        NativeStructuredSupport::ForcedTool,
+        vec![MockStructuredClient::tool_call_response(
+            "emit_person",
+            serde_json::json!({ "name": "Bob" }),
+        )],
+    );
+    let result = generate_blocking(&client, &person_request(StructuredMode::Tool))
+        .await
+        .unwrap();
+
+    assert_eq!(result.object["name"], "Bob");
+    assert_eq!(result.mode_used, StructuredMode::Tool);
+    assert_eq!(
+        client
+            .structured_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+
+    let directive = client.last_directive.lock().unwrap().clone().unwrap();
+    assert_eq!(directive.force_tool.as_deref(), Some("emit_person"));
+    assert!(directive.response_format.is_none());
+    // The synthetic emit tool must be present in the tool surface.
+    assert_eq!(
+        client.last_tool_names.lock().unwrap().as_slice(),
+        &["emit_person".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn test_routing_auto_collapses_to_forced_tool() {
+    let client = RecordingClient::new(
+        NativeStructuredSupport::JsonSchema,
+        vec![MockStructuredClient::tool_call_response(
+            "emit_person",
+            serde_json::json!({ "name": "Bob" }),
+        )],
+    );
+    let result = generate_blocking(&client, &person_request(StructuredMode::Auto))
+        .await
+        .unwrap();
+
+    assert_eq!(result.mode_used, StructuredMode::Tool);
+    let directive = client.last_directive.lock().unwrap().clone().unwrap();
+    assert_eq!(directive.force_tool.as_deref(), Some("emit_person"));
+}
+
+#[tokio::test]
+async fn test_routing_strict_uses_response_format_when_supported() {
+    let client = RecordingClient::new(
+        NativeStructuredSupport::JsonSchema,
+        vec![MockStructuredClient::text_response(r#"{"name": "Bob"}"#)],
+    );
+    let result = generate_blocking(&client, &person_request(StructuredMode::Strict))
+        .await
+        .unwrap();
+
+    assert_eq!(result.object["name"], "Bob");
+    assert_eq!(result.mode_used, StructuredMode::Strict);
+
+    let directive = client.last_directive.lock().unwrap().clone().unwrap();
+    assert!(directive.force_tool.is_none());
+    match directive.response_format {
+        Some(ResponseFormat::JsonSchema {
+            ref name,
+            ref schema,
+        }) => {
+            assert_eq!(name, "person");
+            assert_eq!(schema["required"][0], "name");
+        }
+        other => panic!("expected json_schema response_format, got {:?}", other),
+    }
+    // Strict mode must not inject a tool.
+    assert!(client.last_tool_names.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_routing_strict_falls_back_to_tool_without_support() {
+    // A provider with no native json_schema support must NOT silently degrade
+    // to unconstrained text — it falls back to forced tool mode.
+    let client = RecordingClient::new(
+        NativeStructuredSupport::ForcedTool,
+        vec![MockStructuredClient::tool_call_response(
+            "emit_person",
+            serde_json::json!({ "name": "Bob" }),
+        )],
+    );
+    let result = generate_blocking(&client, &person_request(StructuredMode::Strict))
+        .await
+        .unwrap();
+
+    assert_eq!(result.mode_used, StructuredMode::Tool);
+    let directive = client.last_directive.lock().unwrap().clone().unwrap();
+    assert_eq!(directive.force_tool.as_deref(), Some("emit_person"));
+    assert!(directive.response_format.is_none());
+}
+
+#[tokio::test]
+async fn test_routing_json_uses_json_object_when_supported() {
+    let client = RecordingClient::new(
+        NativeStructuredSupport::JsonSchema,
+        vec![MockStructuredClient::text_response(r#"{"name": "Bob"}"#)],
+    );
+    let result = generate_blocking(&client, &person_request(StructuredMode::Json))
+        .await
+        .unwrap();
+
+    assert_eq!(result.mode_used, StructuredMode::Json);
+    let directive = client.last_directive.lock().unwrap().clone().unwrap();
+    assert_eq!(directive.response_format, Some(ResponseFormat::JsonObject));
+    assert!(directive.force_tool.is_none());
+}
+
+// ========================================================================
+// Adversarial JSON extraction edge cases
+// ========================================================================
+
+#[test]
+fn test_extract_json_crlf_code_fence() {
+    let input = "```json\r\n{\"a\": 1}\r\n```";
+    let result = extract_json_value(input).unwrap();
+    assert_eq!(result["a"], 1);
+}
+
+#[test]
+fn test_extract_json_prose_with_brace_in_string() {
+    // A `}` inside a string value, plus trailing prose: balanced extraction
+    // must keep the in-string brace and stop at the real closing brace.
+    let input = "Sure thing: {\"msg\": \"close with } please\"} — done.";
+    let result = extract_json_value(input).unwrap();
+    assert_eq!(result["msg"], "close with } please");
+}
+
+#[test]
+fn test_extract_json_single_quotes_rejected() {
+    // Single-quoted pseudo-JSON is NOT valid JSON; extraction must fail rather
+    // than silently mis-parse. (Documents current, intentional behavior.)
+    assert!(extract_json_value("{'name': 'Bob'}").is_err());
+}
+
+#[test]
+fn test_extract_raw_output_tool_mode_falls_back_to_text() {
+    // If the model ignores the forced tool and replies with text anyway, tool
+    // mode must fall back to reading the message text.
+    let msg = Message {
+        role: "assistant".to_string(),
+        content: vec![ContentBlock::Text {
+            text: r#"{"name": "Bob"}"#.to_string(),
+        }],
+        reasoning_content: None,
+    };
+    let raw = extract_raw_output(&msg, StructuredMode::Tool);
+    let value = extract_json_value(&raw).unwrap();
+    assert_eq!(value["name"], "Bob");
+}
