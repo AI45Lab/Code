@@ -112,6 +112,9 @@ struct App {
     model: Option<String>,
     /// Cumulative tokens used this session.
     total_tokens: usize,
+    /// Accumulated streamed JSON args of the in-progress tool call, so the
+    /// result line can show what the tool actually did (command/path/pattern).
+    tool_args: String,
     width: u16,
     height: u16,
     keymap: Keymap<Action>,
@@ -371,7 +374,11 @@ impl App {
             }
             AgentEvent::ToolStart { name, .. } => {
                 self.finalize_streaming();
+                self.tool_args.clear();
                 self.push_line(&Style::new().fg(Color::Cyan).render(&format!("  ⚙ {name}")));
+            }
+            AgentEvent::ToolInputDelta { delta } => {
+                self.tool_args.push_str(&delta);
             }
             AgentEvent::ToolEnd {
                 name,
@@ -380,12 +387,15 @@ impl App {
                 metadata,
                 ..
             } => {
+                let args: Option<serde_json::Value> = serde_json::from_str(&self.tool_args).ok();
                 self.push_line(&render_tool_end(
                     &name,
                     exit_code,
                     &output,
                     metadata.as_ref(),
+                    args.as_ref(),
                 ));
+                self.tool_args.clear();
             }
             AgentEvent::SubagentStart {
                 agent, description, ..
@@ -413,10 +423,9 @@ impl App {
             } => {
                 self.state = State::Awaiting;
                 self.pending_tool = Some((tool_id, tool_name.clone()));
-                let body = format!(
-                    "Tool: {tool_name}\nArgs: {}",
-                    truncate(&args.to_string(), 300)
-                );
+                let pretty =
+                    serde_json::to_string_pretty(&args).unwrap_or_else(|_| args.to_string());
+                let body = format!("Tool: {tool_name}\n{}", truncate(&pretty, 400));
                 self.modal = Some(
                     Modal::new()
                         .title("Approve tool call?")
@@ -583,6 +592,7 @@ fn render_tool_end(
     exit_code: i32,
     output: &str,
     meta: Option<&serde_json::Value>,
+    args: Option<&serde_json::Value>,
 ) -> String {
     if let Some(meta) = meta {
         if let (Some(before), Some(after), Some(path)) = (
@@ -594,10 +604,38 @@ fn render_tool_end(
         }
     }
     let status = if exit_code == 0 { "✓" } else { "✗" };
+    // Show the tool's primary argument (command/path/pattern) so the action log
+    // reads like Codex — "✓ bash — npm test" rather than just "✓ bash".
+    let header = match args.and_then(arg_summary) {
+        Some(summary) => format!("  {status} {name} — {summary}"),
+        None => format!("  {status} {name}"),
+    };
     let head = output.lines().take(6).collect::<Vec<_>>().join("\n");
-    Style::new()
-        .fg(Color::BrightBlack)
-        .render(&format!("  {status} {name}\n{head}"))
+    let body = if head.trim().is_empty() {
+        header
+    } else {
+        format!("{header}\n{head}")
+    };
+    Style::new().fg(Color::BrightBlack).render(&body)
+}
+
+/// Extract a one-line summary of a tool's primary argument.
+fn arg_summary(args: &serde_json::Value) -> Option<String> {
+    for key in [
+        "command",
+        "file_path",
+        "path",
+        "pattern",
+        "query",
+        "url",
+        "old_string",
+    ] {
+        if let Some(v) = args.get(key).and_then(|v| v.as_str()) {
+            let v = v.replace('\n', " ");
+            return Some(truncate(v.trim(), 120));
+        }
+    }
+    None
 }
 
 /// Render a unified-ish line diff (changed lines only) with +/- coloring.
@@ -763,6 +801,7 @@ async fn main() -> anyhow::Result<()> {
         history_pos: None,
         model: None,
         total_tokens: 0,
+        tool_args: String::new(),
         width,
         height,
         keymap,
@@ -788,7 +827,7 @@ mod tests {
             "before": "let a = 1;\nkeep;\n",
             "after": "let a = 2;\nkeep;\n",
         });
-        let out = render_tool_end("edit", 0, "ok", Some(&meta));
+        let out = render_tool_end("edit", 0, "ok", Some(&meta), None);
         assert!(out.contains("src/x.rs"), "header has path");
         assert!(out.contains("+1") && out.contains("-1"), "add/del counts");
         assert!(out.contains("let a = 2;"), "shows inserted line");
@@ -798,8 +837,29 @@ mod tests {
 
     #[test]
     fn non_edit_tool_renders_status_line() {
-        let out = render_tool_end("bash", 0, "hello\nworld", None);
+        let out = render_tool_end("bash", 0, "hello\nworld", None, None);
         assert!(out.contains("bash") && out.contains("hello"));
         assert!(!out.contains('✎'), "no diff marker for non-edit tools");
+    }
+
+    #[test]
+    fn tool_end_shows_primary_arg_summary() {
+        let args = serde_json::json!({ "command": "npm test", "timeout": 60 });
+        let out = render_tool_end("bash", 0, "ok\n", None, Some(&args));
+        assert!(out.contains("bash"));
+        assert!(out.contains("npm test"), "shows the command argument");
+    }
+
+    #[test]
+    fn arg_summary_extracts_known_keys() {
+        assert_eq!(
+            arg_summary(&serde_json::json!({ "command": "ls -la" })),
+            Some("ls -la".to_string())
+        );
+        assert_eq!(
+            arg_summary(&serde_json::json!({ "pattern": "TODO" })),
+            Some("TODO".to_string())
+        );
+        assert_eq!(arg_summary(&serde_json::json!({ "unknown": "x" })), None);
     }
 }
