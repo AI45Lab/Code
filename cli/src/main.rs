@@ -108,6 +108,10 @@ struct App {
     history: Vec<String>,
     /// Cursor into `history` while browsing; `None` means "fresh input".
     history_pos: Option<usize>,
+    /// Model name reported by the provider (captured from the first turn).
+    model: Option<String>,
+    /// Cumulative tokens used this session.
+    total_tokens: usize,
     width: u16,
     height: u16,
     keymap: Keymap<Action>,
@@ -174,6 +178,15 @@ impl Model for App {
                 }
                 if let Some(TextareaMsg::Submit(text)) = self.textarea.handle_key(&key) {
                     return Some(cmd::msg(Msg::Submit(text)));
+                }
+            }
+
+            Msg::Term(Event::Mouse(m)) => {
+                use a3s_tui::event::MouseEventKind;
+                match m.kind {
+                    MouseEventKind::ScrollUp => self.viewport.update(ViewportMsg::ScrollUp(3)),
+                    MouseEventKind::ScrollDown => self.viewport.update(ViewportMsg::ScrollDown(3)),
+                    _ => {}
                 }
             }
 
@@ -254,9 +267,18 @@ impl Model for App {
             State::Idle => " a3s-code".to_string(),
             State::Awaiting => " awaiting approval...".to_string(),
         };
+        let mut right = String::new();
+        if let Some(model) = &self.model {
+            right.push_str(model);
+            right.push_str(" · ");
+        }
+        if self.total_tokens > 0 {
+            right.push_str(&format!("{} tok · ", self.total_tokens));
+        }
+        right.push_str("Ctrl+C quit ");
         let status = StatusBar::new()
             .left(&status_text)
-            .right("Ctrl+C quit | PgUp/PgDn scroll ")
+            .right(&right)
             .fg(Color::White)
             .bg(Color::BrightBlack)
             .view(self.width);
@@ -397,11 +419,17 @@ impl App {
                 );
                 return None; // wait for the user; do not pump
             }
-            AgentEvent::End { text, usage, .. } => {
+            AgentEvent::End {
+                text, usage, meta, ..
+            } => {
                 if self.streaming.raw_content().trim().is_empty() && !text.is_empty() {
                     self.streaming.push(&text);
                 }
                 self.finalize_streaming();
+                self.total_tokens += usage.total_tokens;
+                if self.model.is_none() {
+                    self.model = meta.and_then(|m| m.response_model.or(m.request_model));
+                }
                 if usage.total_tokens > 0 {
                     self.push_line(&Style::new().fg(Color::BrightBlack).render(&format!(
                         "  ⏱ {} tokens (prompt {}, completion {})",
@@ -680,6 +708,8 @@ async fn main() -> anyhow::Result<()> {
         pending_tool: None,
         history: Vec::new(),
         history_pos: None,
+        model: None,
+        total_tokens: 0,
         width,
         height,
         keymap,
@@ -687,6 +717,7 @@ async fn main() -> anyhow::Result<()> {
 
     ProgramBuilder::new(app)
         .with_alt_screen()
+        .with_mouse_support()
         .with_fps(30)
         .run()
         .await?;
