@@ -104,6 +104,10 @@ struct App {
     rx: Option<SharedRx>,
     modal: Option<Modal>,
     pending_tool: Option<(String, String)>,
+    /// Submitted prompts, oldest first, for ↑/↓ recall.
+    history: Vec<String>,
+    /// Cursor into `history` while browsing; `None` means "fresh input".
+    history_pos: Option<usize>,
     width: u16,
     height: u16,
     keymap: Keymap<Action>,
@@ -157,6 +161,15 @@ impl Model for App {
                             Msg::Interrupted
                         }));
                     }
+                    return None;
+                }
+                // ↑/↓ recall prompt history (single-line input only, so multi-line
+                // editing keeps normal cursor movement).
+                if matches!(key.code, KeyCode::Up | KeyCode::Down)
+                    && !self.textarea.value().contains('\n')
+                    && !self.history.is_empty()
+                {
+                    self.history_recall(key.code == KeyCode::Up);
                     return None;
                 }
                 if let Some(TextareaMsg::Submit(text)) = self.textarea.handle_key(&key) {
@@ -282,7 +295,7 @@ impl App {
                 self.messages
                     .push(Style::new().fg(Color::BrightBlack).render(
                         "  commands: /clear reset · /exit quit\n  \
-                     Enter send · Esc interrupt · Ctrl+C quit · PgUp/PgDn scroll",
+                     Enter send · ↑/↓ history · Esc interrupt · Ctrl+C quit · PgUp/PgDn scroll",
                     ));
                 self.textarea.clear();
                 self.rebuild_viewport();
@@ -291,6 +304,8 @@ impl App {
             _ => {}
         }
 
+        self.history.push(trimmed.to_string());
+        self.history_pos = None;
         self.messages.push(
             Style::new()
                 .bold()
@@ -343,6 +358,24 @@ impl App {
                     &output,
                     metadata.as_ref(),
                 ));
+            }
+            AgentEvent::SubagentStart {
+                agent, description, ..
+            } => {
+                self.finalize_streaming();
+                self.push_line(
+                    &Style::new()
+                        .fg(Color::Magenta)
+                        .render(&format!("  ↳ subagent {agent}: {description}")),
+                );
+            }
+            AgentEvent::SubagentEnd { agent, success, .. } => {
+                let mark = if success { "✓" } else { "✗" };
+                self.push_line(
+                    &Style::new()
+                        .fg(Color::Magenta)
+                        .render(&format!("  ↳ {mark} subagent {agent} done")),
+                );
             }
             AgentEvent::ConfirmationRequired {
                 tool_id,
@@ -415,6 +448,24 @@ impl App {
     fn push_line(&mut self, line: &str) {
         self.messages.push(line.to_string());
         self.rebuild_viewport();
+    }
+
+    /// Move through prompt history and load the entry into the input. Going
+    /// forward past the newest entry returns to a fresh, empty input.
+    fn history_recall(&mut self, up: bool) {
+        let pos = match (self.history_pos, up) {
+            (None, true) => self.history.len().saturating_sub(1),
+            (None, false) => return,
+            (Some(i), true) => i.saturating_sub(1),
+            (Some(i), false) => i + 1,
+        };
+        if pos >= self.history.len() {
+            self.history_pos = None;
+            self.textarea.clear();
+        } else {
+            self.history_pos = Some(pos);
+            self.textarea.set_value(&self.history[pos]);
+        }
     }
 
     fn update_viewport_with_stream(&mut self) {
@@ -627,6 +678,8 @@ async fn main() -> anyhow::Result<()> {
         rx: None,
         modal: None,
         pending_tool: None,
+        history: Vec::new(),
+        history_pos: None,
         width,
         height,
         keymap,
