@@ -115,6 +115,9 @@ struct App {
     /// Accumulated streamed JSON args of the in-progress tool call, so the
     /// result line can show what the tool actually did (command/path/pattern).
     tool_args: String,
+    /// Live stdout of the in-progress tool (e.g. a running command), shown
+    /// dimmed under the action and cleared when the tool completes.
+    tool_output: String,
     /// When true, tool-confirmation prompts are auto-approved (Codex-style
     /// approval mode), toggled with `/auto`.
     auto_approve: bool,
@@ -396,10 +399,15 @@ impl App {
             AgentEvent::ToolStart { name, .. } => {
                 self.finalize_streaming();
                 self.tool_args.clear();
+                self.tool_output.clear();
                 self.push_line(&Style::new().fg(Color::Cyan).render(&format!("  ⚙ {name}")));
             }
             AgentEvent::ToolInputDelta { delta } => {
                 self.tool_args.push_str(&delta);
+            }
+            AgentEvent::ToolOutputDelta { delta, .. } => {
+                self.tool_output.push_str(&delta);
+                self.update_viewport_with_stream();
             }
             AgentEvent::ToolEnd {
                 name,
@@ -418,6 +426,7 @@ impl App {
                     self.width as usize,
                 ));
                 self.tool_args.clear();
+                self.tool_output.clear();
             }
             AgentEvent::SubagentStart {
                 agent, description, ..
@@ -561,6 +570,12 @@ impl App {
         let rendered = self.streaming.view();
         if !rendered.is_empty() {
             blocks.push(rendered);
+        }
+        // Live stdout of the running tool — show the tail like a terminal.
+        if !self.tool_output.trim().is_empty() {
+            let tail: Vec<&str> = self.tool_output.lines().rev().take(12).collect();
+            let tail = tail.into_iter().rev().collect::<Vec<_>>().join("\n");
+            blocks.push(Style::new().fg(Color::BrightBlack).render(&tail));
         }
         self.viewport.set_content(&blocks.join("\n\n"));
     }
@@ -892,6 +907,7 @@ async fn main() -> anyhow::Result<()> {
         model: None,
         total_tokens: 0,
         tool_args: String::new(),
+        tool_output: String::new(),
         auto_approve: false,
         cwd: workspace,
         width,
