@@ -1,6 +1,6 @@
 {
   "name": "@a3s-lab/code",
-  "version": "4.2.0",
+  "version": "4.2.1",
   "description": "A3S Code - Native Node.js bindings for the coding-agent runtime",
   "main": "index.js",
   "types": "index.d.ts",
@@ -43,11 +43,11 @@
     "test:helpers": "node test-helpers.mjs"
   },
   "optionalDependencies": {
-    "@a3s-lab/code-darwin-arm64": "4.2.0",
-    "@a3s-lab/code-linux-x64-gnu": "4.2.0",
-    "@a3s-lab/code-linux-x64-musl": "4.2.0",
-    "@a3s-lab/code-linux-arm64-gnu": "4.2.0",
-    "@a3s-lab/code-linux-arm64-musl": "4.2.0",
-    "@a3s-lab/code-win32-x64-msvc": "4.2.0"
+    "@a3s-lab/code-darwin-arm64": "4.2.1",
+    "@a3s-lab/code-linux-x64-gnu": "4.2.1",
+    "@a3s-lab/code-linux-x64-musl": "4.2.1",
+    "@a3s-lab/code-linux-arm64-gnu": "4.2.1",
+    "@a3s-lab/code-linux-arm64-musl": "4.2.1",
+    "@a3s-lab/code-win32-x64-msvc": "4.2.1"
   }
 }

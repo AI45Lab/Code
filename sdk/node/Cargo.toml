@@ -1,6 +1,6 @@
 [package]
 name = "a3s-code-node"
-version = "4.2.0"
+version = "4.2.1"
 edition = "2021"
 authors = ["A3S Lab Team"]
 license = "MIT"
@@ -11,7 +11,7 @@ description = "A3S Code Node.js bindings - Native addon via napi-rs"
 crate-type = ["cdylib"]
 
 [dependencies]
-a3s-code-core = { version = "4.2.0", path = "../../core", features = ["ahp", "s3", "serve"] }
+a3s-code-core = { version = "4.2.1", path = "../../core", features = ["ahp", "s3", "serve"] }
 napi = { version = "2", features = ["async", "napi6", "serde-json"] }
 napi-derive = "2"
 tokio = { version = "1.35", features = ["full"] }

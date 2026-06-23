@@ -4744,6 +4744,10 @@ impl From<PyAutoDelegationConfig> for a3s_code_core::AutoDelegationConfig {
             auto_parallel: config.auto_parallel,
             min_confidence: config.min_confidence.clamp(0.0, 1.0),
             max_tasks: config.max_tasks.max(1),
+            // Core fields not exposed by the Python SDK (e.g.
+            // `allow_manual_delegation`) take their core defaults, so adding a
+            // field to `AutoDelegationConfig` no longer breaks this wheel build.
+            ..Default::default()
         }
     }
 }

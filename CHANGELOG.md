@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.2.1] - 2026-06-23
+
+### Fixed
+
+- Python SDK wheel build (and therefore the PyPI + GitHub Release publish steps)
+  failed for 4.2.0: the `PyAutoDelegationConfig → AutoDelegationConfig`
+  conversion used a struct literal that omitted the `allow_manual_delegation`
+  field added to `AutoDelegationConfig`. The conversion now falls back to core
+  defaults for fields the Python SDK does not expose, so future core fields no
+  longer break the wheel build. (The crates.io and npm 4.2.0 artifacts were
+  unaffected; 4.2.1 completes the release across all channels.)
+
 ## [4.2.0] - 2026-06-23
 
 ### Added
