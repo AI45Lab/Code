@@ -12,7 +12,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use a3s_code_core::{Agent, AgentEvent, AgentSession};
+use a3s_code_core::{Agent, AgentEvent, AgentSession, SessionOptions};
 use a3s_tui::cmd::{self, Cmd};
 use a3s_tui::components::modal::{Modal, ModalMsg};
 use a3s_tui::components::textarea::TextareaMsg;
@@ -121,11 +121,17 @@ impl Model for App {
     type Msg = Msg;
 
     fn init(&mut self) -> Option<Cmd<Msg>> {
-        let welcome = Style::new().fg(Color::BrightBlack).italic().render(
-            "  A3S Code — type a message and press Enter.\n  \
-             Esc interrupt | Ctrl+C quit | PgUp/PgDn scroll | /help\n",
-        );
-        self.viewport.set_content(&welcome);
+        if self.messages.is_empty() {
+            let welcome = Style::new().fg(Color::BrightBlack).italic().render(
+                "  A3S Code — type a message and press Enter.\n  \
+                 Esc interrupt | Ctrl+C quit | PgUp/PgDn scroll | /help\n",
+            );
+            self.viewport.set_content(&welcome);
+        } else {
+            // Resumed session — show the prior conversation, scrolled to the end.
+            self.rebuild_viewport();
+            self.viewport.update(ViewportMsg::Bottom);
+        }
         None
     }
 
@@ -545,7 +551,7 @@ async fn run_smoke(session: Arc<AgentSession>) -> anyhow::Result<()> {
     let prompt = std::env::var("A3S_CODE_TUI_PROMPT")
         .unwrap_or_else(|_| "Reply with exactly one short sentence: what is 2 + 2?".to_string());
     eprintln!("[smoke] prompt: {prompt}");
-    let (mut rx, _join) = session.stream(prompt.as_str(), None).await?;
+    let (mut rx, join) = session.stream(prompt.as_str(), None).await?;
     while let Some(event) = rx.recv().await {
         match event {
             AgentEvent::TextDelta { text } => print!("{text}"),
@@ -559,17 +565,13 @@ async fn run_smoke(session: Arc<AgentSession>) -> anyhow::Result<()> {
                 eprintln!("[confirm] auto-allowing {tool_name}");
                 let _ = session.confirm_tool_use(&tool_id, true, None).await;
             }
-            AgentEvent::End { .. } => {
-                eprintln!("\n[end]");
-                break;
-            }
-            AgentEvent::Error { message } => {
-                eprintln!("\n[error] {message}");
-                break;
-            }
+            AgentEvent::End { .. } => eprintln!("\n[end]"),
+            AgentEvent::Error { message } => eprintln!("\n[error] {message}"),
             _ => {}
         }
     }
+    // Let the stream task finish (incl. auto-save/persist) before we exit.
+    let _ = join.await;
     Ok(())
 }
 
@@ -659,7 +661,58 @@ async fn main() -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("failed to load agent from {config_path}: {e}"))?;
     let workspace = std::env::current_dir()?.to_string_lossy().to_string();
-    let session = Arc::new(agent.session(workspace, None)?);
+
+    // Persistent, resumable session: stored under <cwd>/.a3s/tui-sessions and
+    // keyed by a fixed id, so relaunching in the same directory continues the
+    // conversation. Falls back to a fresh session when none exists yet.
+    let store_dir = std::path::Path::new(&workspace).join(".a3s/tui-sessions");
+    let store: Arc<dyn a3s_code_core::store::SessionStore> = Arc::new(
+        a3s_code_core::store::FileSessionStore::new(&store_dir)
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to open session store {store_dir:?}: {e}"))?,
+    );
+    const SESSION_ID: &str = "tui-default";
+    let session = match agent.resume_session(
+        SESSION_ID,
+        SessionOptions::new()
+            .with_session_store(store.clone())
+            .with_auto_save(true),
+    ) {
+        Ok(s) => s,
+        Err(_) => agent.session(
+            workspace.clone(),
+            Some(
+                SessionOptions::new()
+                    .with_session_store(store.clone())
+                    .with_session_id(SESSION_ID)
+                    .with_auto_save(true),
+            ),
+        )?,
+    };
+
+    // Seed the transcript with any resumed conversation (user + assistant text).
+    let initial_messages: Vec<String> = session
+        .history()
+        .iter()
+        .filter_map(|m| {
+            let text = m.text();
+            if text.trim().is_empty() {
+                return None;
+            }
+            match m.role.as_str() {
+                "user" => Some(
+                    Style::new()
+                        .bold()
+                        .fg(Color::BrightGreen)
+                        .render(&format!("❯ {}", text.trim())),
+                ),
+                "assistant" => Some(text),
+                _ => None,
+            }
+        })
+        .collect();
+
+    let session = Arc::new(session);
 
     // Headless smoke mode: exercise the agent-stream integration (the hard part
     // the TUI depends on) without taking over the terminal. Useful for CI/probes
@@ -702,7 +755,7 @@ async fn main() -> anyhow::Result<()> {
         streaming: StreamingMarkdown::new((width as usize).saturating_sub(2)),
         thinking: String::new(),
         state: State::Idle,
-        messages: Vec::new(),
+        messages: initial_messages,
         rx: None,
         modal: None,
         pending_tool: None,
