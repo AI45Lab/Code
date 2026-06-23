@@ -1399,6 +1399,52 @@ impl LlmClient for RecordingClient {
         *self.last_tool_names.lock().unwrap() = tools.iter().map(|t| t.name.clone()).collect();
         self.pop()
     }
+
+    async fn complete_streaming_structured(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        tools: &[ToolDefinition],
+        directive: &StructuredDirective,
+        _cancel_token: CancellationToken,
+    ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
+        self.structured_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        *self.last_directive.lock().unwrap() = Some(directive.clone());
+        *self.last_tool_names.lock().unwrap() = tools.iter().map(|t| t.name.clone()).collect();
+        let response = self.pop()?;
+        let (tx, rx) = mpsc::channel(10);
+        tokio::spawn(async move {
+            for block in &response.message.content {
+                if let ContentBlock::ToolUse { name, input, .. } = block {
+                    tx.send(StreamEvent::ToolUseStart {
+                        id: "call_001".to_string(),
+                        name: name.clone(),
+                    })
+                    .await
+                    .ok();
+                    let json_str = serde_json::to_string(input).unwrap();
+                    for chunk in json_str.as_bytes().chunks(8) {
+                        tx.send(StreamEvent::ToolUseInputDelta(
+                            String::from_utf8_lossy(chunk).to_string(),
+                        ))
+                        .await
+                        .ok();
+                    }
+                } else if let ContentBlock::Text { text } = block {
+                    for chunk in text.as_bytes().chunks(8) {
+                        tx.send(StreamEvent::TextDelta(
+                            String::from_utf8_lossy(chunk).to_string(),
+                        ))
+                        .await
+                        .ok();
+                    }
+                }
+            }
+            tx.send(StreamEvent::Done(response)).await.ok();
+        });
+        Ok(rx)
+    }
 }
 
 fn person_request(mode: StructuredMode) -> StructuredRequest {
@@ -1531,6 +1577,40 @@ async fn test_routing_json_uses_json_object_when_supported() {
     let directive = client.last_directive.lock().unwrap().clone().unwrap();
     assert_eq!(directive.response_format, Some(ResponseFormat::JsonObject));
     assert!(directive.force_tool.is_none());
+}
+
+#[tokio::test]
+async fn test_streaming_routing_tool_mode_forces_tool_choice() {
+    // The streaming path must also force the directive (via
+    // complete_streaming_structured), not silently drop it.
+    let client = RecordingClient::new(
+        NativeStructuredSupport::ForcedTool,
+        vec![MockStructuredClient::tool_call_response(
+            "emit_person",
+            serde_json::json!({ "name": "Bob" }),
+        )],
+    );
+
+    let partials = Arc::new(Mutex::new(0usize));
+    let partials_cb = partials.clone();
+    let result = generate_streaming(
+        &client,
+        &person_request(StructuredMode::Tool),
+        Box::new(move |_partial| {
+            *partials_cb.lock().unwrap() += 1;
+        }),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.object["name"], "Bob");
+    assert_eq!(result.mode_used, StructuredMode::Tool);
+    let directive = client.last_directive.lock().unwrap().clone().unwrap();
+    assert_eq!(directive.force_tool.as_deref(), Some("emit_person"));
+    assert!(
+        *partials.lock().unwrap() >= 1,
+        "on_partial should fire at least once (final object)"
+    );
 }
 
 // ========================================================================

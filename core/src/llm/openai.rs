@@ -516,37 +516,40 @@ impl LlmClient for OpenAiClient {
         tools: &[ToolDefinition],
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<mpsc::Receiver<StreamEvent>> {
+        self.send_streaming(
+            self.build_chat_request(messages, system, tools, None),
+            cancel_token,
+        )
+        .await
+    }
+
+    async fn complete_streaming_structured(
+        &self,
+        messages: &[Message],
+        system: Option<&str>,
+        tools: &[ToolDefinition],
+        directive: &structured::StructuredDirective,
+        cancel_token: tokio_util::sync::CancellationToken,
+    ) -> Result<mpsc::Receiver<StreamEvent>> {
+        self.send_streaming(
+            self.build_chat_request(messages, system, tools, Some(directive)),
+            cancel_token,
+        )
+        .await
+    }
+}
+
+impl OpenAiClient {
+    /// Execute a fully-built streaming chat-completions request (sets `stream`).
+    async fn send_streaming(
+        &self,
+        mut request: serde_json::Value,
+        cancel_token: tokio_util::sync::CancellationToken,
+    ) -> Result<mpsc::Receiver<StreamEvent>> {
         {
+            request["stream"] = serde_json::json!(true);
+            request["stream_options"] = serde_json::json!({ "include_usage": true });
             let request_started_at = Instant::now();
-            let mut openai_messages = Vec::new();
-
-            if let Some(sys) = system {
-                openai_messages.push(serde_json::json!({
-                    "role": "system",
-                    "content": sys,
-                }));
-            }
-
-            openai_messages.extend(self.convert_messages(messages));
-
-            let mut request = serde_json::json!({
-                "model": self.model,
-                "messages": openai_messages,
-                "stream": true,
-                "stream_options": { "include_usage": true },
-            });
-
-            if let Some(temp) = self.temperature {
-                request["temperature"] = serde_json::json!(temp);
-            }
-            if let Some(max) = self.max_tokens {
-                request["max_tokens"] = serde_json::json!(max);
-            }
-
-            if !tools.is_empty() {
-                request["tools"] = serde_json::json!(self.convert_tools(tools));
-            }
-
             let url = format!("{}{}", self.base_url, self.chat_completions_path);
             let request_headers = self.request_headers();
 

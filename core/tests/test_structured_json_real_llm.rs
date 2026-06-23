@@ -22,7 +22,8 @@ use std::time::Duration;
 
 use a3s_code_core::config::CodeConfig;
 use a3s_code_core::llm::structured::{
-    generate_blocking, StructuredMode, StructuredRequest, StructuredResult,
+    generate_blocking, generate_streaming, PartialObjectCallback, StructuredMode,
+    StructuredRequest, StructuredResult,
 };
 use a3s_code_core::llm::{create_client_with_config, LlmClient};
 use a3s_code_core::planning::LlmPlanner;
@@ -159,6 +160,39 @@ async fn real_structured_tool_mode_is_stable() {
 
     eprintln!(
         "[tool] {RUNS}/{RUNS} runs produced valid objects; total repair rounds = {total_repairs}"
+    );
+}
+
+/// The streaming structured path must also force `tool_choice` and yield a
+/// valid object (the streaming counterpart of the core fix).
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires real provider credentials and network access"]
+async fn real_structured_tool_mode_streaming() {
+    let client = real_client();
+    let partials = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+    let partials_cb = partials.clone();
+    let on_partial: PartialObjectCallback = Box::new(move |_p| {
+        *partials_cb.lock().unwrap() += 1;
+    });
+
+    let result = tokio::time::timeout(
+        CALL_TIMEOUT,
+        generate_streaming(
+            client.as_ref(),
+            &person_request(StructuredMode::Tool),
+            on_partial,
+        ),
+    )
+    .await
+    .expect("streaming call timed out")
+    .expect("streaming tool-mode generation failed");
+
+    assert_eq!(result.mode_used, StructuredMode::Tool);
+    assert_valid_person(&result.object);
+    eprintln!(
+        "[tool-stream] partials={} -> {}",
+        *partials.lock().unwrap(),
+        result.object
     );
 }
 

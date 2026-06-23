@@ -304,9 +304,33 @@ impl LlmClient for AnthropicClient {
         tools: &[ToolDefinition],
         cancel_token: CancellationToken,
     ) -> Result<mpsc::Receiver<StreamEvent>> {
+        self.send_streaming(self.build_request(messages, system, tools), cancel_token)
+            .await
+    }
+
+    async fn complete_streaming_structured(
+        &self,
+        messages: &[Message],
+        system: Option<&str>,
+        tools: &[ToolDefinition],
+        directive: &structured::StructuredDirective,
+        cancel_token: CancellationToken,
+    ) -> Result<mpsc::Receiver<StreamEvent>> {
+        let mut request_body = self.build_request(messages, system, tools);
+        Self::apply_directive(&mut request_body, directive);
+        self.send_streaming(request_body, cancel_token).await
+    }
+}
+
+impl AnthropicClient {
+    /// Execute a fully-built streaming request body (sets `stream: true`).
+    async fn send_streaming(
+        &self,
+        mut request_body: serde_json::Value,
+        cancel_token: CancellationToken,
+    ) -> Result<mpsc::Receiver<StreamEvent>> {
         {
             let request_started_at = Instant::now();
-            let mut request_body = self.build_request(messages, system, tools);
             request_body["stream"] = serde_json::json!(true);
 
             let url = format!("{}/v1/messages", self.base_url);
