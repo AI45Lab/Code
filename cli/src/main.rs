@@ -12,6 +12,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use a3s_code_core::hitl::TimeoutAction;
 use a3s_code_core::{Agent, AgentEvent, AgentSession, SessionOptions};
 use a3s_tui::cmd::{self, Cmd};
 use a3s_tui::components::modal::{Modal, ModalMsg};
@@ -815,10 +816,18 @@ async fn main() -> anyhow::Result<()> {
             .map_err(|e| anyhow::anyhow!("failed to open session store {store_dir:?}: {e}"))?,
     );
     const SESSION_ID: &str = "tui-default";
+    // Enable HITL confirmation so file-modifying tools (write/edit/patch) can
+    // run — they require a confirmation manager, otherwise they fail with
+    // "requires confirmation but no HITL confirmation manager is configured".
+    // The TUI is that manager (approve/deny modal, or /auto). Long timeout so
+    // the modal never expires while the user reads it.
+    let confirmation = a3s_code_core::hitl::ConfirmationPolicy::enabled()
+        .with_timeout(3_600_000, TimeoutAction::Reject);
     let session = match agent.resume_session(
         SESSION_ID,
         SessionOptions::new()
             .with_session_store(store.clone())
+            .with_confirmation_policy(confirmation.clone())
             .with_auto_save(true),
     ) {
         Ok(s) => s,
@@ -828,6 +837,7 @@ async fn main() -> anyhow::Result<()> {
                 SessionOptions::new()
                     .with_session_store(store.clone())
                     .with_session_id(SESSION_ID)
+                    .with_confirmation_policy(confirmation)
                     .with_auto_save(true),
             ),
         )?,
