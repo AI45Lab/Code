@@ -18,5 +18,7 @@ a3s-code-core = { path = "../core" }
 a3s-tui = { path = "../../tui" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 anyhow = "1"
+serde_json = "1"
+similar = "2"
 
 [workspace]

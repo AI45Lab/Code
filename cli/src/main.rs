@@ -334,15 +334,15 @@ impl App {
                 name,
                 output,
                 exit_code,
+                metadata,
                 ..
             } => {
-                let status = if exit_code == 0 { "✓" } else { "✗" };
-                let head = output.lines().take(6).collect::<Vec<_>>().join("\n");
-                self.push_line(
-                    &Style::new()
-                        .fg(Color::BrightBlack)
-                        .render(&format!("  {status} {name}\n{head}")),
-                );
+                self.push_line(&render_tool_end(
+                    &name,
+                    exit_code,
+                    &output,
+                    metadata.as_ref(),
+                ));
             }
             AgentEvent::ConfirmationRequired {
                 tool_id,
@@ -494,6 +494,75 @@ async fn run_smoke(session: Arc<AgentSession>) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Render a completed tool call. File-editing tools (`write`/`edit`) carry
+/// `before`/`after`/`file_path` in their metadata — show those as a colored
+/// diff; everything else shows a status line + a few lines of output.
+fn render_tool_end(
+    name: &str,
+    exit_code: i32,
+    output: &str,
+    meta: Option<&serde_json::Value>,
+) -> String {
+    if let Some(meta) = meta {
+        if let (Some(before), Some(after), Some(path)) = (
+            meta.get("before").and_then(|v| v.as_str()),
+            meta.get("after").and_then(|v| v.as_str()),
+            meta.get("file_path").and_then(|v| v.as_str()),
+        ) {
+            return render_diff(path, before, after);
+        }
+    }
+    let status = if exit_code == 0 { "✓" } else { "✗" };
+    let head = output.lines().take(6).collect::<Vec<_>>().join("\n");
+    Style::new()
+        .fg(Color::BrightBlack)
+        .render(&format!("  {status} {name}\n{head}"))
+}
+
+/// Render a unified-ish line diff (changed lines only) with +/- coloring.
+fn render_diff(path: &str, before: &str, after: &str) -> String {
+    use similar::{ChangeTag, TextDiff};
+    const MAX_LINES: usize = 80;
+
+    let diff = TextDiff::from_lines(before, after);
+    let mut lines: Vec<String> = Vec::new();
+    let (mut adds, mut dels) = (0usize, 0usize);
+    for change in diff.iter_all_changes() {
+        let raw = change.value();
+        let raw = raw.strip_suffix('\n').unwrap_or(raw);
+        match change.tag() {
+            ChangeTag::Delete => {
+                dels += 1;
+                if lines.len() < MAX_LINES {
+                    lines.push(Style::new().fg(Color::Red).render(&format!("  - {raw}")));
+                }
+            }
+            ChangeTag::Insert => {
+                adds += 1;
+                if lines.len() < MAX_LINES {
+                    lines.push(Style::new().fg(Color::Green).render(&format!("  + {raw}")));
+                }
+            }
+            ChangeTag::Equal => {}
+        }
+    }
+    if lines.len() >= MAX_LINES {
+        lines.push(
+            Style::new()
+                .fg(Color::BrightBlack)
+                .render("  … (diff truncated)"),
+        );
+    }
+    let mut out = Style::new()
+        .fg(Color::Cyan)
+        .render(&format!("  ✎ {path}  (+{adds} -{dels})"));
+    if !lines.is_empty() {
+        out.push('\n');
+        out.push_str(&lines.join("\n"));
+    }
+    out
+}
+
 fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
@@ -569,4 +638,31 @@ async fn main() -> anyhow::Result<()> {
         .run()
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn edit_metadata_renders_colored_diff() {
+        let meta = serde_json::json!({
+            "file_path": "src/x.rs",
+            "before": "let a = 1;\nkeep;\n",
+            "after": "let a = 2;\nkeep;\n",
+        });
+        let out = render_tool_end("edit", 0, "ok", Some(&meta));
+        assert!(out.contains("src/x.rs"), "header has path");
+        assert!(out.contains("+1") && out.contains("-1"), "add/del counts");
+        assert!(out.contains("let a = 2;"), "shows inserted line");
+        assert!(out.contains("let a = 1;"), "shows deleted line");
+        assert!(!out.contains("keep;"), "unchanged lines are omitted");
+    }
+
+    #[test]
+    fn non_edit_tool_renders_status_line() {
+        let out = render_tool_end("bash", 0, "hello\nworld", None);
+        assert!(out.contains("bash") && out.contains("hello"));
+        assert!(!out.contains('✎'), "no diff marker for non-edit tools");
+    }
 }
