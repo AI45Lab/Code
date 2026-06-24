@@ -4814,7 +4814,10 @@ impl PyAutoDelegationConfig {
     fn __repr__(&self) -> String {
         format!(
             "AutoDelegationConfig(enabled={}, auto_parallel={}, min_confidence={}, max_tasks={})",
-            self.enabled, self.auto_parallel, self.min_confidence, self.max_tasks
+            self.enabled,
+            self.auto_parallel,
+            self.min_confidence,
+            self.max_tasks
         )
     }
 }
@@ -4963,6 +4966,15 @@ struct PySessionOptions {
     /// long-running cluster sessions to stop in-memory state from
     /// growing unboundedly.
     retention_limits: Option<pyo3::PyObject>,
+    /// Structured JSONL trajectory path. When set, records user input,
+    /// LLM turns, tool calls, tool observations, token usage, and episode end.
+    trajectory_path: Option<String>,
+    /// Trajectory mode: "on" or "off". Defaults to "on" when trajectory_path is set.
+    trajectory_mode: Option<String>,
+    /// Max bytes retained for any single text field before truncation.
+    trajectory_max_text_bytes: Option<usize>,
+    /// Whether to include full message arrays in LLM request records.
+    trajectory_include_messages: Option<bool>,
 }
 
 impl Clone for PySessionOptions {
@@ -5028,6 +5040,10 @@ impl Clone for PySessionOptions {
             retention_limits: pyo3::Python::with_gil(|py| {
                 self.retention_limits.as_ref().map(|o| o.clone_ref(py))
             }),
+            trajectory_path: self.trajectory_path.clone(),
+            trajectory_mode: self.trajectory_mode.clone(),
+            trajectory_max_text_bytes: self.trajectory_max_text_bytes,
+            trajectory_include_messages: self.trajectory_include_messages,
         }
     }
 }
@@ -5083,6 +5099,10 @@ impl PySessionOptions {
             ahp_transport: None,
             budget_guard: None,
             retention_limits: None,
+            trajectory_path: None,
+            trajectory_mode: None,
+            trajectory_max_text_bytes: None,
+            trajectory_include_messages: None,
         }
     }
 
@@ -5639,6 +5659,54 @@ impl PySessionOptions {
         self.retention_limits = value;
     }
 
+    /// Structured JSONL trajectory output path.
+    ///
+    /// When set, a3s-code records user input, LLM turns, tool calls, tool
+    /// observations, token usage, and execution end status. This is the
+    /// programmatic equivalent of ``A3S_CODE_TRAJECTORY_PATH``.
+    #[getter]
+    fn get_trajectory_path(&self) -> Option<String> {
+        self.trajectory_path.clone()
+    }
+
+    #[setter]
+    fn set_trajectory_path(&mut self, value: Option<String>) {
+        self.trajectory_path = value;
+    }
+
+    /// Trajectory mode: ``"on"`` or ``"off"``.
+    #[getter]
+    fn get_trajectory_mode(&self) -> Option<String> {
+        self.trajectory_mode.clone()
+    }
+
+    #[setter]
+    fn set_trajectory_mode(&mut self, value: Option<String>) {
+        self.trajectory_mode = value;
+    }
+
+    /// Max bytes retained for any single text field before truncation.
+    #[getter]
+    fn get_trajectory_max_text_bytes(&self) -> Option<usize> {
+        self.trajectory_max_text_bytes
+    }
+
+    #[setter]
+    fn set_trajectory_max_text_bytes(&mut self, value: Option<usize>) {
+        self.trajectory_max_text_bytes = value;
+    }
+
+    /// Whether LLM request records include full message arrays.
+    #[getter]
+    fn get_trajectory_include_messages(&self) -> Option<bool> {
+        self.trajectory_include_messages
+    }
+
+    #[setter]
+    fn set_trajectory_include_messages(&mut self, value: Option<bool>) {
+        self.trajectory_include_messages = value;
+    }
+
     /// Register an instruction skill programmatically.
     ///
     /// Instructions are injected into the system prompt at session start.
@@ -6100,6 +6168,22 @@ fn build_rust_session_options(so: PySessionOptions) -> PyResult<RustSessionOptio
         if let Some(limits) = parse_py_retention_limits(&retention) {
             o = o.with_retention_limits(limits);
         }
+    }
+    if let Some(path) = so.trajectory_path {
+        let mut config = a3s_code_core::RlTrajectoryConfig::new(path);
+        if let Some(mode) = so.trajectory_mode {
+            let parsed = a3s_code_core::RlTrajectoryMode::parse(&mode).ok_or_else(|| {
+                PyValueError::new_err(format!("trajectory_mode must be 'on' or 'off', got {mode}"))
+            })?;
+            config = config.with_mode(parsed);
+        }
+        if let Some(max_bytes) = so.trajectory_max_text_bytes {
+            config = config.with_max_text_bytes(max_bytes);
+        }
+        if let Some(include_messages) = so.trajectory_include_messages {
+            config = config.with_include_messages(include_messages);
+        }
+        o = o.with_rl_trajectory(config);
     }
     if so.auto_save {
         o = o.with_auto_save(true);
@@ -7037,6 +7121,25 @@ mod tests {
 
         let opts = build_rust_session_options(session_options).unwrap();
         assert_eq!(opts.enforce_active_skill_tool_restrictions, Some(true));
+    }
+
+    #[test]
+    fn session_options_map_rl_trajectory_controls() {
+        let mut session_options = PySessionOptions::new();
+        session_options.trajectory_path = Some("/tmp/a3s-trajectory.jsonl".to_string());
+        session_options.trajectory_mode = Some("on".to_string());
+        session_options.trajectory_max_text_bytes = Some(1234);
+        session_options.trajectory_include_messages = Some(false);
+
+        let opts = build_rust_session_options(session_options).unwrap();
+        let config = opts.rl_trajectory.expect("trajectory config");
+        assert_eq!(
+            config.path,
+            std::path::PathBuf::from("/tmp/a3s-trajectory.jsonl")
+        );
+        assert_eq!(config.mode, a3s_code_core::RlTrajectoryMode::On);
+        assert_eq!(config.max_text_bytes, 1234);
+        assert!(!config.include_messages);
     }
 
     #[test]

@@ -90,6 +90,8 @@ pub(crate) struct AgentConfig {
     pub goal_tracking: bool,
     /// Optional hook engine for firing lifecycle events (PreToolUse, PostToolUse, etc.)
     pub hook_engine: Option<Arc<dyn HookExecutor>>,
+    /// Optional structured JSONL trajectory recorder for RL training and service data capture.
+    pub rl_trajectory_recorder: crate::rl_trajectory::RlTrajectoryRecorder,
     /// Optional skill registry for tool permission enforcement
     pub skill_registry: Option<Arc<crate::skills::SkillRegistry>>,
     /// When true, active skill `allowed-tools` restrict ordinary session tool calls.
@@ -183,6 +185,7 @@ impl std::fmt::Debug for AgentConfig {
             .field("planning_mode", &self.planning_mode)
             .field("goal_tracking", &self.goal_tracking)
             .field("hook_engine", &self.hook_engine.is_some())
+            .field("rl_trajectory", &self.rl_trajectory_recorder.is_enabled())
             .field(
                 "skill_registry",
                 &self.skill_registry.as_ref().map(|r| r.len()),
@@ -230,6 +233,7 @@ impl Default for AgentConfig {
             planning_mode: PlanningMode::default(),
             goal_tracking: false,
             hook_engine: None,
+            rl_trajectory_recorder: crate::rl_trajectory::RlTrajectoryRecorder::disabled(),
             skill_registry: Some(Arc::new(crate::skills::SkillRegistry::with_builtins())),
             enforce_active_skill_tool_restrictions: false,
             max_parse_retries: 2,

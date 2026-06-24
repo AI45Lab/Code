@@ -103,6 +103,7 @@ pub(crate) mod prompts;
 pub mod queue;
 pub mod retention;
 pub(crate) mod retry;
+pub mod rl_trajectory;
 pub mod run;
 pub(crate) mod safety_gate;
 pub mod sandbox;
@@ -144,6 +145,7 @@ pub use orchestration::{
     WorkflowStepRecord, WORKFLOW_CHECKPOINT_SCHEMA_VERSION,
 };
 pub use prompts::{AgentStyle, DetectionConfidence, PlanningMode, SystemPromptSlots};
+pub use rl_trajectory::{RlTrajectoryConfig, RlTrajectoryMode, RlTrajectoryRecorder};
 pub use run::{
     ActiveToolSnapshot, InMemoryRunStore, RunEventRecord, RunHandle, RunRecord, RunSnapshot,
     RunStatus,

@@ -33,6 +33,20 @@ impl AgentLoop {
             "LLM completion started"
         );
 
+        let selected_tool_names =
+            crate::tools::select_tools_for_messages(&self.config.tools, &state.messages)
+                .into_iter()
+                .map(|tool| tool.name)
+                .collect::<Vec<_>>();
+        self.config.rl_trajectory_recorder.record_llm_request(
+            session_id.unwrap_or(""),
+            turn,
+            &state.messages,
+            augmented_system.as_deref(),
+            &selected_tool_names,
+            estimate_prompt_tokens(&state.messages, augmented_system.as_deref()),
+        );
+
         self.fire_generate_start(session_id.unwrap_or(""), effective_prompt, augmented_system)
             .await;
 
@@ -255,6 +269,12 @@ impl AgentLoop {
             a3s.llm.total_tokens = response.usage.total_tokens,
             "Turn token usage"
         );
+        self.config.rl_trajectory_recorder.record_llm_response(
+            session_id.unwrap_or(""),
+            turn,
+            response,
+            llm_duration.as_millis() as u64,
+        );
     }
 
     async fn emit_turn_end(
@@ -317,6 +337,13 @@ impl AgentLoop {
         {
             state.messages = compacted;
         }
+
+        self.config.rl_trajectory_recorder.record_context_compacted(
+            session_id.unwrap_or(""),
+            before_len,
+            &state.messages,
+            percent_before,
+        );
 
         if let Some(tx) = event_tx {
             tx.send(AgentEvent::ContextCompacted {

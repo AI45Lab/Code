@@ -68,6 +68,10 @@ impl ExecutionLoopState {
         self.turn
     }
 
+    pub(super) fn current_turn(&self) -> usize {
+        self.turn
+    }
+
     pub(super) fn continuation_count(&self) -> u32 {
         self.continuation_count
     }
