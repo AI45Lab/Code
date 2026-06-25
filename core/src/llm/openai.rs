@@ -1098,6 +1098,11 @@ pub(crate) struct OpenAiChoice {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct OpenAiMessage {
+    // glm5.1 (and other GLM/zhipu reasoning models) stream/return reasoning under
+    // `reasoning`, not the `reasoning_content` kimi/deepseek use. Without this alias the
+    // reasoning phase yields zero recognized deltas → no ReasoningDelta events → the
+    // stream-stall watchdog kills long reasoning (asset-diagnose "未返回结构化输出").
+    #[serde(alias = "reasoning")]
     pub(crate) reasoning_content: Option<String>,
     pub(crate) content: Option<String>,
     pub(crate) tool_calls: Option<Vec<OpenAiToolCall>>,
@@ -1159,6 +1164,11 @@ pub(crate) struct OpenAiStreamChoice {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct OpenAiDelta {
+    // glm5.1 (and other GLM/zhipu reasoning models) stream/return reasoning under
+    // `reasoning`, not the `reasoning_content` kimi/deepseek use. Without this alias the
+    // reasoning phase yields zero recognized deltas → no ReasoningDelta events → the
+    // stream-stall watchdog kills long reasoning (asset-diagnose "未返回结构化输出").
+    #[serde(alias = "reasoning")]
     pub(crate) reasoning_content: Option<String>,
     pub(crate) content: Option<String>,
     pub(crate) tool_calls: Option<Vec<OpenAiToolCallDelta>>,

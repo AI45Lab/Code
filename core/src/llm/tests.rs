@@ -3289,4 +3289,25 @@ mod multimodal_tests {
             _ => panic!("Expected ToolResult"),
         }
     }
+
+    // glm5.1 / GLM reasoning models stream + return their chain-of-thought under
+    // `reasoning`, not the `reasoning_content` kimi/deepseek use. The serde alias must
+    // capture it; otherwise the whole reasoning phase yields zero recognized deltas and
+    // the stream-stall watchdog kills long reasoning (asset-diagnose "未返回结构化输出").
+    #[test]
+    fn glm_reasoning_aliases_to_reasoning_content_in_streaming_delta() {
+        let d: OpenAiDelta = serde_json::from_str(r#"{"reasoning":"thinking"}"#).unwrap();
+        assert_eq!(d.reasoning_content.as_deref(), Some("thinking"));
+        // the canonical field still works (kimi/deepseek)
+        let d2: OpenAiDelta = serde_json::from_str(r#"{"reasoning_content":"rc"}"#).unwrap();
+        assert_eq!(d2.reasoning_content.as_deref(), Some("rc"));
+    }
+
+    #[test]
+    fn glm_reasoning_aliases_to_reasoning_content_in_message() {
+        let m: OpenAiMessage =
+            serde_json::from_str(r#"{"reasoning":"thinking","content":"answer"}"#).unwrap();
+        assert_eq!(m.reasoning_content.as_deref(), Some("thinking"));
+        assert_eq!(m.content.as_deref(), Some("answer"));
+    }
 }
