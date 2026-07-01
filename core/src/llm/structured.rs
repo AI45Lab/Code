@@ -130,55 +130,53 @@ pub async fn generate_blocking(
 
         accumulate_usage(&mut total_usage, &resp.usage);
 
-        let raw_text = extract_raw_output(&resp.message, mode);
-        let parsed = extract_json_value(&raw_text);
+        // Mine the object from every place a model might have parked it (tool call,
+        // text content, AND the reasoning channel), trying each balanced JSON
+        // candidate against the schema. Reasoning models routinely leave `content`
+        // empty and emit the object inside `reasoning`, so without the reasoning
+        // fallback generate_object failed with "no structured output" across models.
+        let candidates = extract_raw_candidates(&resp.message, mode);
+        let resolution = resolve_structured(&candidates, &req.schema);
 
-        match parsed {
-            Ok(value) => match validate_against_schema(&value, &req.schema) {
-                Ok(()) => {
-                    return Ok(StructuredResult {
-                        object: value,
-                        raw_text: Some(raw_text),
-                        usage: total_usage,
-                        repair_rounds,
-                        mode_used: mode,
-                    });
-                }
-                Err(errors) if repair_rounds < req.max_repair_attempts => {
-                    repair_rounds += 1;
-                    let repair_msg = build_repair_message(&raw_text, &errors);
-                    append_repair_context(
-                        &mut messages,
-                        &resp.message,
-                        &repair_msg,
-                        mode,
-                        &raw_text,
-                    );
-                }
-                Err(errors) => {
-                    bail!(
-                            "Structured output failed schema validation after {} repair attempts. Errors: {}",
-                            repair_rounds,
-                            errors.join("; ")
-                        );
-                }
-            },
-            Err(parse_err) if repair_rounds < req.max_repair_attempts => {
-                repair_rounds += 1;
-                let repair_msg = format!(
-                    "Your previous output could not be parsed as JSON:\n\n{}\n\nError: {}\n\nPlease return ONLY a valid JSON object matching the schema.",
-                    raw_text, parse_err
-                );
-                append_repair_context(&mut messages, &resp.message, &repair_msg, mode, &raw_text);
-            }
-            Err(parse_err) => {
-                bail!(
-                    "Structured output failed JSON parsing after {} repair attempts: {}",
-                    repair_rounds,
-                    parse_err
-                );
-            }
+        if let Some((value, raw)) = resolution.valid {
+            return Ok(StructuredResult {
+                object: value,
+                raw_text: Some(raw),
+                usage: total_usage,
+                repair_rounds,
+                mode_used: mode,
+            });
         }
+
+        if repair_rounds >= req.max_repair_attempts {
+            return Err(match resolution.invalid {
+                Some((_, errors)) => anyhow::anyhow!(
+                    "Structured output failed schema validation after {} repair attempts. Errors: {}",
+                    repair_rounds,
+                    errors.join("; ")
+                ),
+                None => anyhow::anyhow!(
+                    "Structured output parsing failed after {} repair attempts: no JSON object found in tool call, text content, or reasoning channel",
+                    repair_rounds
+                ),
+            });
+        }
+
+        repair_rounds += 1;
+        let (repair_msg, raw_for_ctx) = match resolution.invalid {
+            Some((raw, errors)) => (build_repair_message(&raw, &errors), raw),
+            None => {
+                let raw = resolution.raw_seen.unwrap_or_default();
+                (build_parse_failure_repair(&raw), raw)
+            }
+        };
+        append_repair_context(
+            &mut messages,
+            &resp.message,
+            &repair_msg,
+            mode,
+            &raw_for_ctx,
+        );
     }
 }
 
@@ -260,16 +258,24 @@ pub async fn generate_streaming(
     }
 
     let resp = final_response.context("Stream ended without Done event")?;
-    let raw_text = extract_raw_output(&resp.message, mode);
-    let value =
-        extract_json_value(&raw_text).context("Failed to parse final streamed output as JSON")?;
-
-    validate_against_schema(&value, &req.schema).map_err(|errors| {
-        anyhow::anyhow!(
-            "Streamed structured output failed schema validation: {}",
-            errors.join("; ")
-        )
-    })?;
+    // Same multi-source resolution as the blocking path: the final message may carry
+    // the object in the tool call, the text content, or the reasoning channel.
+    let candidates = extract_raw_candidates(&resp.message, mode);
+    let resolution = resolve_structured(&candidates, &req.schema);
+    let (value, raw_text) = match resolution.valid {
+        Some(vr) => vr,
+        None => {
+            return Err(match resolution.invalid {
+                Some((_, errors)) => anyhow::anyhow!(
+                    "Streamed structured output failed schema validation: {}",
+                    errors.join("; ")
+                ),
+                None => anyhow::anyhow!(
+                    "Streamed output produced no parseable JSON object (checked tool call, text content, and reasoning channel)"
+                ),
+            });
+        }
+    };
 
     // Emit final complete object
     on_partial(&value);
@@ -362,6 +368,11 @@ fn find_balanced_json_array(text: &str) -> Option<&str> {
 }
 
 fn find_balanced(text: &str, open: char, close: char) -> Option<&str> {
+    find_balanced_range(text, open, close).map(|(start, end)| &text[start..end])
+}
+
+/// Byte range `[start, end)` of the first balanced `open..close` substring (quote-aware).
+fn find_balanced_range(text: &str, open: char, close: char) -> Option<(usize, usize)> {
     let bytes = text.as_bytes();
     let open_byte = open as u8;
     let close_byte = close as u8;
@@ -406,13 +417,33 @@ fn find_balanced(text: &str, open: char, close: char) -> Option<&str> {
             _ if b == close_byte => {
                 depth -= 1;
                 if depth == 0 {
-                    return Some(&text[start..start + i + 1]);
+                    return Some((start, start + i + 1));
                 }
             }
             _ => {}
         }
     }
     None
+}
+
+/// Every top-level balanced `open..close` substring, in document order.
+///
+/// Reasoning traces often contain several objects (worked examples, partial drafts)
+/// before the final answer, so callers validate each against the schema and keep the
+/// one that fits rather than blindly trusting the first `{...}`.
+fn find_all_balanced(text: &str, open: char, close: char) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut base = 0usize;
+    while base < text.len() {
+        match find_balanced_range(&text[base..], open, close) {
+            Some((start, end)) => {
+                out.push(text[base + start..base + end].to_string());
+                base += end;
+            }
+            None => break,
+        }
+    }
+    out
 }
 
 /// Find the byte offset where JSON content starts in a text stream.
@@ -957,21 +988,130 @@ fn build_tools(req: &StructuredRequest, mode: StructuredMode) -> Vec<ToolDefinit
     }
 }
 
-/// Extract the raw JSON string from the LLM response based on mode.
-fn extract_raw_output(message: &super::Message, mode: StructuredMode) -> String {
-    match mode {
-        StructuredMode::Tool => {
-            // Look for tool call input
-            let calls = message.tool_calls();
-            if let Some(call) = calls.first() {
-                serde_json::to_string(&call.args).unwrap_or_default()
-            } else {
-                // Fallback: maybe the model responded with text anyway
-                message.text()
+/// Outcome of mining a response for the structured object across all candidate sources.
+struct StructuredResolution {
+    /// A schema-valid object plus the raw source string it came from.
+    valid: Option<(Value, String)>,
+    /// First parseable-but-schema-invalid object source + its validation errors,
+    /// used to build a targeted repair prompt.
+    invalid: Option<(String, Vec<String>)>,
+    /// First non-empty raw candidate, shown verbatim in a parse-failure repair prompt.
+    raw_seen: Option<String>,
+}
+
+/// Append `s` to `out` if it is non-empty and not already present (trimmed, deduped).
+fn push_candidate(out: &mut Vec<String>, s: String) {
+    let trimmed = s.trim();
+    if !trimmed.is_empty() && !out.iter().any(|c| c == trimmed) {
+        out.push(trimmed.to_string());
+    }
+}
+
+/// Ordered raw strings to mine for the structured object, most authoritative first:
+/// tool-call arguments, then text content, then the reasoning channel.
+///
+/// The reasoning fallback is the crux of the cross-model fix: reasoning models
+/// (GLM/zhipu, DeepSeek-R1, kimi…) frequently emit the final object inside
+/// `reasoning` with `content` empty and no tool call. Earlier extraction only looked
+/// at the tool call / text, so those models yielded an empty string and the whole
+/// generate_object failed even though a perfectly good object was produced.
+fn extract_raw_candidates(message: &super::Message, mode: StructuredMode) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if mode == StructuredMode::Tool {
+        if let Some(call) = message.tool_calls().first() {
+            push_candidate(
+                &mut out,
+                serde_json::to_string(&call.args).unwrap_or_default(),
+            );
+        }
+    }
+    push_candidate(&mut out, message.text());
+    if let Some(reasoning) = message.reasoning_content.as_deref() {
+        push_candidate(&mut out, reasoning.to_string());
+    }
+    out
+}
+
+/// Every JSON object/array value mineable from possibly-dirty text, in document order
+/// (direct parse, code fences, then all balanced `{...}` / `[...]`). Deduped.
+fn extract_all_json_values(text: &str) -> Vec<Value> {
+    let trimmed = text.trim();
+    let mut values: Vec<Value> = Vec::new();
+    let consider = |candidate: &str, values: &mut Vec<Value>| {
+        if let Ok(v) = serde_json::from_str::<Value>(candidate.trim()) {
+            if (v.is_object() || v.is_array()) && !values.contains(&v) {
+                values.push(v);
             }
         }
-        _ => message.text(),
+    };
+    consider(trimmed, &mut values);
+    if let Some(inner) = strip_code_fence(trimmed) {
+        consider(inner, &mut values);
     }
+    for candidate in find_all_balanced(trimmed, '{', '}') {
+        consider(&candidate, &mut values);
+    }
+    for candidate in find_all_balanced(trimmed, '[', ']') {
+        consider(&candidate, &mut values);
+    }
+    values
+}
+
+/// Try every raw candidate × every JSON value it yields against the schema; return the
+/// first schema-valid object, else the best parseable-but-invalid object (for repair).
+fn resolve_structured(candidates: &[String], schema: &Value) -> StructuredResolution {
+    let mut invalid: Option<(String, Vec<String>)> = None;
+    let mut raw_seen: Option<String> = None;
+    for raw in candidates {
+        if raw_seen.is_none() && !raw.trim().is_empty() {
+            raw_seen = Some(raw.clone());
+        }
+        for value in extract_all_json_values(raw) {
+            match validate_against_schema(&value, schema) {
+                Ok(()) => {
+                    return StructuredResolution {
+                        valid: Some((value, raw.clone())),
+                        invalid,
+                        raw_seen,
+                    };
+                }
+                Err(errors) => {
+                    if invalid.is_none() {
+                        invalid = Some((raw.clone(), errors));
+                    }
+                }
+            }
+        }
+    }
+    StructuredResolution {
+        valid: None,
+        invalid,
+        raw_seen,
+    }
+}
+
+/// UTF-8-safe truncation to at most `max` bytes (never splits a multibyte char —
+/// repair prompts echo arbitrary model output, including CJK).
+fn truncate_utf8(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+/// Repair prompt for when nothing parseable was produced at all.
+fn build_parse_failure_repair(raw_text: &str) -> String {
+    if raw_text.trim().is_empty() {
+        return "Your previous response contained no JSON. Respond with ONLY a single valid JSON object that matches the schema — no prose, no markdown, no analysis, and put the object in your reply content (not in a thinking/reasoning aside).".to_string();
+    }
+    format!(
+        "Your previous output could not be parsed as a JSON object:\n\n{}\n\nReturn ONLY a single valid JSON object matching the schema — no prose, no markdown.",
+        truncate_utf8(raw_text, 2000)
+    )
 }
 
 fn build_repair_message(raw_text: &str, errors: &[String]) -> String {
@@ -979,7 +1119,7 @@ fn build_repair_message(raw_text: &str, errors: &[String]) -> String {
     let truncated_raw = if raw_text.len() > 2000 {
         format!(
             "{}...[truncated, {} bytes total]",
-            &raw_text[..2000],
+            truncate_utf8(raw_text, 2000),
             raw_text.len()
         )
     } else {

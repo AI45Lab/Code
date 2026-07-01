@@ -1,5 +1,5 @@
 use super::AgentResult;
-use crate::llm::{Message, TokenUsage};
+use crate::llm::{ContentBlock, Message, TokenUsage};
 use crate::verification::VerificationReport;
 use serde_json::Value;
 use std::time::Instant;
@@ -215,6 +215,34 @@ impl ExecutionLoopState {
         }
     }
 
+    /// Build a result from a turn that was cancelled mid-generation. Keeps the
+    /// conversation accumulated so far (the user's message above all) so the next
+    /// turn remembers it. Appends a short assistant marker when the log would
+    /// otherwise end on a user message, so the next user turn still alternates.
+    pub(super) fn finish_interrupted(mut self) -> AgentResult {
+        let ends_on_user = self
+            .messages
+            .last()
+            .map(|m| m.role != "assistant")
+            .unwrap_or(false);
+        if ends_on_user {
+            self.messages.push(Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "(Response interrupted by the user.)".to_string(),
+                }],
+                reasoning_content: None,
+            });
+        }
+        AgentResult {
+            text: String::new(),
+            messages: self.messages,
+            usage: self.total_usage,
+            tool_calls_count: self.tool_calls_count,
+            verification_reports: self.verification_reports,
+        }
+    }
+
     fn tool_signature(tool_name: &str, args: &Value) -> String {
         format!(
             "{}:{}",
@@ -228,6 +256,27 @@ impl ExecutionLoopState {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn finish_interrupted_keeps_user_message_and_alternates() {
+        // A cancelled turn must keep the user's message (so the next turn
+        // remembers it) and end on an assistant message (so it still alternates).
+        let mut state = ExecutionLoopState::new(&[]);
+        state.messages.push(Message::user("what is the plan?"));
+        let result = state.finish_interrupted();
+        assert!(
+            result
+                .messages
+                .iter()
+                .any(|m| m.role == "user" && m.text().contains("what is the plan?")),
+            "user message must survive the interrupt"
+        );
+        assert_eq!(
+            result.messages.last().unwrap().role,
+            "assistant",
+            "history must end on an assistant message to alternate"
+        );
+    }
 
     #[test]
     fn duplicate_tool_call_uses_recent_success_and_error_signatures() {

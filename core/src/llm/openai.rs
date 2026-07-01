@@ -573,7 +573,23 @@ impl OpenAiClient {
                             match result {
                                 Ok(r) => r,
                                 Err(e) => {
-                                    return AttemptOutcome::Fatal(anyhow::anyhow!("HTTP request failed: {}", e));
+                                    // Transient network error (timeout, reset,
+                                    // mid-flight drop — common on throttled
+                                    // endpoints): retry with backoff like 429/5xx
+                                    // instead of failing the turn. GLM and other
+                                    // OpenAI-compatible endpoints hit this most.
+                                    return if crate::retry::is_transient_error(&e) {
+                                        AttemptOutcome::Retryable {
+                                            status: reqwest::StatusCode::SERVICE_UNAVAILABLE,
+                                            body: format!("network error: {e}"),
+                                            retry_after: None,
+                                        }
+                                    } else {
+                                        AttemptOutcome::Fatal(anyhow::anyhow!(
+                                            "HTTP request failed: {}",
+                                            e
+                                        ))
+                                    };
                                 }
                             }
                         }
@@ -731,7 +747,15 @@ impl OpenAiClient {
                                             // skip message.content to avoid sending duplicate full content
                                             let skip_content = !text_content.is_empty();
                                             if let Some(reasoning) = message.reasoning_content {
-                                                reasoning_content_accum.push_str(&reasoning);
+                                                // Reasoning is its OWN channel — accumulate into
+                                                // reasoning_content, NEVER text_content. Merging it into
+                                                // text_content made the assistant's `content` carry the
+                                                // chain-of-thought, so a reasoning-only turn looked like a
+                                                // finished text answer (response.text() non-empty) and the
+                                                // agent loop terminated before the model emitted its tool
+                                                // call → workers never reach generate_object → asset-diagnose
+                                                // "未返回结构化输出". It also tripped `skip_content`, dropping
+                                                // the model's real content.
                                                 if first_token_ms.is_none() {
                                                     first_token_ms = Some(
                                                         request_started_at.elapsed().as_millis()
@@ -739,7 +763,7 @@ impl OpenAiClient {
                                                     );
                                                 }
                                                 if let Some(delta) = Self::merge_stream_text(
-                                                    &mut text_content,
+                                                    &mut reasoning_content_accum,
                                                     &reasoning,
                                                 ) {
                                                     let _ = tx
@@ -782,16 +806,18 @@ impl OpenAiClient {
                                             }
                                         } else if let Some(delta) = choice.delta {
                                             if let Some(ref rc) = delta.reasoning_content {
-                                                reasoning_content_accum.push_str(rc);
+                                                // Reasoning stays in reasoning_content, never text_content
+                                                // (see the message-branch note above).
                                                 if first_token_ms.is_none() {
                                                     first_token_ms = Some(
                                                         request_started_at.elapsed().as_millis()
                                                             as u64,
                                                     );
                                                 }
-                                                if let Some(delta) =
-                                                    Self::merge_stream_text(&mut text_content, rc)
-                                                {
+                                                if let Some(delta) = Self::merge_stream_text(
+                                                    &mut reasoning_content_accum,
+                                                    rc,
+                                                ) {
                                                     let _ = tx
                                                         .send(StreamEvent::ReasoningDelta(delta))
                                                         .await;
@@ -904,14 +930,16 @@ impl OpenAiClient {
                             let skip_content = !text_content.is_empty();
                             if let Some(message) = choice.message {
                                 if let Some(reasoning) = message.reasoning_content {
-                                    reasoning_content_accum.push_str(&reasoning);
+                                    // Reasoning → reasoning_content only, never text_content
+                                    // (see the note in complete_streaming).
                                     if first_token_ms.is_none() {
                                         first_token_ms =
                                             Some(request_started_at.elapsed().as_millis() as u64);
                                     }
-                                    if let Some(delta) =
-                                        Self::merge_stream_text(&mut text_content, &reasoning)
-                                    {
+                                    if let Some(delta) = Self::merge_stream_text(
+                                        &mut reasoning_content_accum,
+                                        &reasoning,
+                                    ) {
                                         let _ = tx.send(StreamEvent::ReasoningDelta(delta)).await;
                                     }
                                 }
@@ -941,13 +969,14 @@ impl OpenAiClient {
                                 }
                             } else if let Some(delta) = choice.delta {
                                 if let Some(ref rc) = delta.reasoning_content {
-                                    reasoning_content_accum.push_str(rc);
+                                    // Reasoning → reasoning_content only, never text_content
+                                    // (see the note in complete_streaming).
                                     if first_token_ms.is_none() {
                                         first_token_ms =
                                             Some(request_started_at.elapsed().as_millis() as u64);
                                     }
                                     if let Some(delta) =
-                                        Self::merge_stream_text(&mut text_content, rc)
+                                        Self::merge_stream_text(&mut reasoning_content_accum, rc)
                                     {
                                         let _ = tx.send(StreamEvent::ReasoningDelta(delta)).await;
                                     }
@@ -1098,6 +1127,11 @@ pub(crate) struct OpenAiChoice {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct OpenAiMessage {
+    // glm5.1 (and other GLM/zhipu reasoning models) stream/return reasoning under
+    // `reasoning`, not the `reasoning_content` kimi/deepseek use. Without this alias the
+    // reasoning phase yields zero recognized deltas → no ReasoningDelta events → the
+    // stream-stall watchdog kills long reasoning (asset-diagnose "未返回结构化输出").
+    #[serde(alias = "reasoning")]
     pub(crate) reasoning_content: Option<String>,
     pub(crate) content: Option<String>,
     pub(crate) tool_calls: Option<Vec<OpenAiToolCall>>,
@@ -1159,6 +1193,11 @@ pub(crate) struct OpenAiStreamChoice {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct OpenAiDelta {
+    // glm5.1 (and other GLM/zhipu reasoning models) stream/return reasoning under
+    // `reasoning`, not the `reasoning_content` kimi/deepseek use. Without this alias the
+    // reasoning phase yields zero recognized deltas → no ReasoningDelta events → the
+    // stream-stall watchdog kills long reasoning (asset-diagnose "未返回结构化输出").
+    #[serde(alias = "reasoning")]
     pub(crate) reasoning_content: Option<String>,
     pub(crate) content: Option<String>,
     pub(crate) tool_calls: Option<Vec<OpenAiToolCallDelta>>,
@@ -1188,6 +1227,115 @@ mod tests {
 
     fn make_client() -> OpenAiClient {
         OpenAiClient::new("test-key".to_string(), "gpt-test".to_string())
+    }
+
+    // --- streaming reasoning-channel regression -----------------------------
+    // Reasoning models (glm5.1/zhipu) stream chain-of-thought under `reasoning`.
+    // It must land in reasoning_content, NEVER in the text content — otherwise
+    // response.text() looks like a finished answer and the agent loop terminates
+    // before the model emits its tool call (asset-diagnose "未返回结构化输出").
+
+    struct MockSseHttp {
+        chunks: Vec<String>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::llm::http::HttpClient for MockSseHttp {
+        async fn post(
+            &self,
+            _url: &str,
+            _headers: Vec<(&str, &str)>,
+            _body: &serde_json::Value,
+            _cancel: tokio_util::sync::CancellationToken,
+        ) -> anyhow::Result<crate::llm::http::HttpResponse> {
+            anyhow::bail!("post is unused in the streaming test")
+        }
+
+        async fn post_streaming(
+            &self,
+            _url: &str,
+            _headers: Vec<(&str, &str)>,
+            _body: &serde_json::Value,
+            _cancel: tokio_util::sync::CancellationToken,
+        ) -> anyhow::Result<crate::llm::http::StreamingHttpResponse> {
+            let items: Vec<anyhow::Result<bytes::Bytes>> = self
+                .chunks
+                .iter()
+                .map(|s| Ok(bytes::Bytes::from(s.clone())))
+                .collect();
+            Ok(crate::llm::http::StreamingHttpResponse {
+                status: 200,
+                retry_after: None,
+                byte_stream: Box::pin(futures::stream::iter(items)),
+                error_body: String::new(),
+            })
+        }
+    }
+
+    fn glm_client(chunks: Vec<String>) -> OpenAiClient {
+        OpenAiClient::new("k".to_string(), "glm-test".to_string())
+            .with_http_client(std::sync::Arc::new(MockSseHttp { chunks }))
+    }
+
+    async fn drain_to_done(client: &OpenAiClient) -> crate::llm::LlmResponse {
+        use crate::llm::{LlmClient, StreamEvent};
+        let mut rx = client
+            .complete_streaming(
+                &[Message::user("go")],
+                None,
+                &[],
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .expect("stream opened");
+        let mut done = None;
+        while let Some(ev) = rx.recv().await {
+            if let StreamEvent::Done(resp) = ev {
+                done = Some(resp);
+            }
+        }
+        done.expect("a Done event")
+    }
+
+    #[tokio::test]
+    async fn streaming_reasoning_does_not_leak_into_content_and_keeps_tool_call() {
+        let chunks = vec![
+            "data: {\"choices\":[{\"delta\":{\"reasoning\":\"Let me plan the workers\"}}]}\n\n"
+                .to_string(),
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"parallel_task\",\"arguments\":\"{}\"}}]}}]}\n\n"
+                .to_string(),
+            "data: [DONE]\n\n".to_string(),
+        ];
+        let resp = drain_to_done(&glm_client(chunks)).await;
+        // Reasoning must NOT appear as text content.
+        assert_eq!(resp.message.text(), "", "reasoning leaked into content");
+        assert_eq!(
+            resp.message.reasoning_content.as_deref(),
+            Some("Let me plan the workers")
+        );
+        // The tool call still survives, so the agent can act.
+        let calls = resp.message.tool_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "parallel_task");
+    }
+
+    #[tokio::test]
+    async fn streaming_reasoning_only_turn_yields_empty_text() {
+        // A pure "thinking" turn (reasoning, no content, no tool call) must yield empty
+        // text() so the agent loop's looks_incomplete("")==true path CONTINUES instead of
+        // terminating prematurely — the multi-worker diagnose failure root cause.
+        let chunks = vec![
+            "data: {\"choices\":[{\"delta\":{\"reasoning\":\"still thinking, no answer yet\"}}]}\n\n"
+                .to_string(),
+            "data: [DONE]\n\n".to_string(),
+        ];
+        let resp = drain_to_done(&glm_client(chunks)).await;
+        assert_eq!(resp.message.text(), "");
+        assert_eq!(
+            resp.message.reasoning_content.as_deref(),
+            Some("still thinking, no answer yet")
+        );
+        assert!(resp.message.tool_calls().is_empty());
     }
 
     #[test]

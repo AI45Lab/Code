@@ -356,7 +356,23 @@ impl AnthropicClient {
                             match result {
                                 Ok(r) => r,
                                 Err(e) => {
-                                    return AttemptOutcome::Fatal(anyhow::anyhow!("HTTP request failed: {}", e));
+                                    // A transient network error (timeout, reset,
+                                    // mid-flight drop — common on throttled
+                                    // endpoints) carries no HTTP status. Retry it
+                                    // with backoff like 429/5xx instead of failing
+                                    // the turn; a real fatal error still bails.
+                                    return if crate::retry::is_transient_error(&e) {
+                                        AttemptOutcome::Retryable {
+                                            status: reqwest::StatusCode::SERVICE_UNAVAILABLE,
+                                            body: format!("network error: {e}"),
+                                            retry_after: None,
+                                        }
+                                    } else {
+                                        AttemptOutcome::Fatal(anyhow::anyhow!(
+                                            "HTTP request failed: {}",
+                                            e
+                                        ))
+                                    };
                                 }
                             }
                         }

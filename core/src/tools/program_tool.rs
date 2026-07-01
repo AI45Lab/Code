@@ -16,6 +16,9 @@ use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration};
 
 const DEFAULT_SCRIPT_TIMEOUT_MS: u64 = 30_000;
+/// Scripts allowed to delegate (`task`/`parallel_task`) run child agents that
+/// each take a full LLM turn, so they need a far more generous default timeout.
+const DELEGATION_SCRIPT_TIMEOUT_MS: u64 = 600_000;
 const DEFAULT_SCRIPT_MAX_TOOL_CALLS: usize = 20;
 const DEFAULT_SCRIPT_MAX_OUTPUT_BYTES: usize = 64 * 1024;
 const MAX_SCRIPT_SOURCE_BYTES: usize = 64 * 1024;
@@ -213,6 +216,9 @@ fn script_allowed_tools(args: &serde_json::Value, registry: &ToolRegistry) -> Ha
         .unwrap_or_else(|| registry.list().into_iter().collect());
 
     allowed.remove("program");
+    // `task`/`parallel_task` ARE allowed in PTC scripts now: host tool calls run
+    // on the outer multi-threaded runtime (see execute_host_tool_json), so
+    // `ctx.tool("parallel_task", …)` fans out child agents in parallel.
     allowed
 }
 
@@ -263,7 +269,17 @@ async fn run_quickjs_script(
     allowed_tools: HashSet<String>,
     limits: ScriptLimits,
 ) -> Result<ToolOutput> {
-    let timeout_ms = limits.timeout_ms.unwrap_or(DEFAULT_SCRIPT_TIMEOUT_MS);
+    // A script that can delegate runs child agents (each a full LLM turn, often
+    // 30s to several minutes), so the 30s default is far too short and silently
+    // times out real workflows. Default delegation-capable scripts to a generous
+    // timeout; pure compute/search scripts keep the short default. An explicit
+    // limits.timeoutMs always wins.
+    let delegating = allowed_tools.contains("parallel_task") || allowed_tools.contains("task");
+    let timeout_ms = limits.timeout_ms.unwrap_or(if delegating {
+        DELEGATION_SCRIPT_TIMEOUT_MS
+    } else {
+        DEFAULT_SCRIPT_TIMEOUT_MS
+    });
     let max_tool_calls = limits
         .max_tool_calls
         .unwrap_or(DEFAULT_SCRIPT_MAX_TOOL_CALLS);
@@ -271,6 +287,9 @@ async fn run_quickjs_script(
         .max_output_bytes
         .unwrap_or(DEFAULT_SCRIPT_MAX_OUTPUT_BYTES);
     let executable_source = script_source_with_host_entrypoint(source)?;
+    // Captured on the outer multi-threaded runtime (we're async here, before the
+    // VM's nested single-thread runtime is built) so host tool calls fan out.
+    let outer = tokio::runtime::Handle::current();
     let state = Arc::new(Mutex::new(ScriptVmState {
         registry,
         ctx,
@@ -279,6 +298,7 @@ async fn run_quickjs_script(
         max_output_bytes,
         tool_calls: 0,
         records: Vec::new(),
+        outer,
     }));
 
     let vm_state = Arc::clone(&state);
@@ -401,6 +421,10 @@ struct ScriptVmState {
     max_output_bytes: usize,
     tool_calls: usize,
     records: Vec<ScriptCallRecord>,
+    /// Handle to the OUTER multi-threaded session runtime. The script VM runs on
+    /// a nested single-thread runtime; host tool calls are dispatched here so
+    /// delegation tools (`parallel_task`/`task`) can actually fan out children.
+    outer: tokio::runtime::Handle,
 }
 
 fn embedded_script_bootstrap(inputs_json: &str) -> String {
@@ -441,7 +465,7 @@ async fn execute_host_tool_json(
     let args = serde_json::from_str(&args_json).map_err(|err| {
         JsError::new_from_js_message("string", "object", format!("invalid tool args JSON: {err}"))
     })?;
-    let (registry, ctx, max_output_bytes) = {
+    let (registry, ctx, max_output_bytes, outer) = {
         let mut script = state.lock().await;
         if !script.allowed_tools.contains(&tool) {
             return Err(JsError::new_from_js_message(
@@ -462,12 +486,22 @@ async fn execute_host_tool_json(
             Arc::clone(&script.registry),
             script.ctx.clone(),
             script.max_output_bytes,
+            script.outer.clone(),
         )
     };
 
-    let result = registry
-        .execute_with_context(&tool, &args, &ctx)
+    // Run the tool on the OUTER multi-threaded runtime (not this nested
+    // single-thread VM runtime) so delegation tools can spawn child agents that
+    // actually run in parallel — `ctx.tool("parallel_task", …)` now fans out.
+    let tool_for_spawn = tool.clone();
+    let result = outer
+        .spawn(async move {
+            registry
+                .execute_with_context(&tool_for_spawn, &args, &ctx)
+                .await
+        })
         .await
+        .map_err(|err| JsError::new_from_js_message("tool", "spawn", err.to_string()))?
         .map_err(|err| JsError::new_from_js_message("tool", "result", err.to_string()))?;
     let mut output = result.output;
     if output.len() > max_output_bytes {
@@ -666,6 +700,22 @@ mod tests {
 
         let allowed = script_allowed_tools(&serde_json::json!({}), &registry);
 
+        assert!(allowed.contains("echo"));
+        assert!(!allowed.contains("program"));
+    }
+
+    #[test]
+    fn program_tool_allows_delegation_tools_in_scripts() {
+        // Delegation tools are allowed in PTC scripts again (host tool calls run
+        // on the outer multi-threaded runtime, so they fan out). Only `program`
+        // stays stripped (no nested PTC recursion).
+        let registry = ToolRegistry::new(PathBuf::from("/tmp"));
+        let args = serde_json::json!({
+            "allowed_tools": ["parallel_task", "task", "program", "echo"]
+        });
+        let allowed = script_allowed_tools(&args, &registry);
+        assert!(allowed.contains("parallel_task"));
+        assert!(allowed.contains("task"));
         assert!(allowed.contains("echo"));
         assert!(!allowed.contains("program"));
     }

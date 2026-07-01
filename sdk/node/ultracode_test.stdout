@@ -1,0 +1,11 @@
+
+=== autonomous ultracode test (3 iters) 2026-06-26T10:49:31.820Z ===
+#0 41343ms scriptForm=false programOk=false directParallel=false synth=3/3 err=no
+#1 52059ms scriptForm=false programOk=false directParallel=false synth=3/3 err=no
+#2 41764ms scriptForm=false programOk=false directParallel=false synth=3/3 err=no
+
+SUMMARY
+  generated a program WORKFLOW SCRIPT that fanned out: 0/3
+  fanned out at all (script OR direct parallel_task): 0/3
+  errors/crashes: 0
+  VERDICT: NOT effective

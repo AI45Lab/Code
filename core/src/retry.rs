@@ -183,11 +183,58 @@ where
     )
 }
 
+/// Heuristic: is this a transient *network* error worth retrying — a timeout,
+/// connection reset/refused/closed, broken pipe, DNS failure, or a request that
+/// dropped mid-flight? These carry no HTTP status (so `is_retryable_status`
+/// can't see them), yet Claude Code retries them just like 429/5xx. We only have
+/// the error's rendered text (a `CodeError`/`anyhow::Error` chain) to classify.
+pub fn is_transient_error<E: std::fmt::Display>(e: &E) -> bool {
+    let m = e.to_string().to_lowercase();
+    [
+        "timed out",
+        "timeout",
+        "connection reset",
+        "connection refused",
+        "connection closed",
+        "connection aborted",
+        "connection error",
+        "broken pipe",
+        "reset by peer",
+        "error sending request",
+        "incomplete message",
+        "unexpected eof",
+        "dns error",
+        "unreachable",
+        "tls handshake",
+        "request error",
+        "body error",
+        "decoding response",
+        "channel closed",
+        "stream closed",
+    ]
+    .iter()
+    .any(|p| m.contains(p))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
+
+    #[test]
+    fn transient_error_classification() {
+        let t = |s: &str| is_transient_error(&anyhow::anyhow!("{s}"));
+        // Transient network errors → retry.
+        assert!(t("error sending request for url: operation timed out"));
+        assert!(t("connection reset by peer"));
+        assert!(t("LLM error: connection closed before message completed"));
+        assert!(t("tls handshake eof"));
+        // Real application errors → do NOT retry.
+        assert!(!t("invalid api key"));
+        assert!(!t("model not found"));
+        assert!(!t("context length exceeded"));
+    }
 
     // ========================================================================
     // RetryConfig unit tests

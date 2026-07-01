@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "a3s-code"
-version = "4.2.1"
+version = "4.2.8"
 description = "A3S Code - Native Python bindings for the coding-agent runtime"
 readme = "README.md"
 license = {text = "MIT"}

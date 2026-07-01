@@ -115,7 +115,7 @@ impl AgentLoop {
         }
 
         loop {
-            let llm_turn = self
+            let llm_turn = match self
                 .execute_llm_turn(
                     &mut state,
                     &augmented_system,
@@ -124,7 +124,19 @@ impl AgentLoop {
                     &event_tx,
                     cancel_token,
                 )
-                .await?;
+                .await
+            {
+                Ok(turn) => turn,
+                // Interrupted mid-generation (Esc / cancel): keep the conversation
+                // accumulated so far — above all the user's message — and return it
+                // as the result so it is committed to history. Without this the
+                // whole turn is dropped and the agent "forgets" what was just asked
+                // when the user continues.
+                Err(_) if cancel_token.is_cancelled() => {
+                    return Ok(state.finish_interrupted());
+                }
+                Err(e) => return Err(e),
+            };
             let turn = llm_turn.turn;
             let response = llm_turn.response;
             let tool_calls = llm_turn.tool_calls;

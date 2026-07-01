@@ -61,6 +61,34 @@ impl MockStructuredClient {
             meta: None,
         }
     }
+
+    /// Reasoning-model response: the object (and/or thinking) is in the reasoning
+    /// channel, `content` may be empty, and there is no tool call — the shape that
+    /// GLM/zhipu reasoning models produce and that used to fail generate_object.
+    fn reasoning_response(reasoning: &str, content: &str) -> LlmResponse {
+        LlmResponse {
+            message: Message {
+                role: "assistant".to_string(),
+                content: if content.is_empty() {
+                    vec![]
+                } else {
+                    vec![ContentBlock::Text {
+                        text: content.to_string(),
+                    }]
+                },
+                reasoning_content: Some(reasoning.to_string()),
+            },
+            usage: TokenUsage {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                total_tokens: 15,
+                cache_read_tokens: None,
+                cache_write_tokens: None,
+            },
+            stop_reason: Some("end_turn".to_string()),
+            meta: None,
+        }
+    }
 }
 
 #[async_trait]
@@ -470,6 +498,114 @@ async fn test_generate_blocking_repair_on_schema_violation() {
     let result = generate_blocking(&client, &req).await.unwrap();
     assert_eq!(result.object["age"], 25);
     assert_eq!(result.repair_rounds, 1);
+}
+
+// ========================================================================
+// Cross-model generate_object: reasoning-channel resolution
+// (regression for "未返回结构化输出 / no structured output" with GLM5.1 etc.)
+// ========================================================================
+
+fn invoice_request(mode: StructuredMode) -> StructuredRequest {
+    StructuredRequest {
+        prompt: "Extract invoice".to_string(),
+        system: None,
+        schema: serde_json::json!({
+            "type": "object",
+            "required": ["amount", "currency"],
+            "properties": {
+                "amount": {"type": "number"},
+                "currency": {"type": "string"}
+            }
+        }),
+        schema_name: "invoice".to_string(),
+        schema_description: None,
+        mode,
+        max_repair_attempts: 2,
+    }
+}
+
+#[tokio::test]
+async fn test_reasoning_model_object_only_in_reasoning_channel() {
+    // GLM/zhipu reasoning model: empty content, no tool call, object in the reasoning
+    // channel. This was the production "未返回结构化输出" failure — must resolve, no repair.
+    let client = MockStructuredClient::new(vec![MockStructuredClient::reasoning_response(
+        r#"Let me work it out... amount is 100, currency USD. Final: {"amount": 100, "currency": "USD"}"#,
+        "",
+    )]);
+    let result = generate_blocking(&client, &invoice_request(StructuredMode::Tool))
+        .await
+        .unwrap();
+    assert_eq!(result.object["amount"], 100);
+    assert_eq!(result.object["currency"], "USD");
+    assert_eq!(result.repair_rounds, 0);
+}
+
+#[tokio::test]
+async fn test_reasoning_picks_schema_valid_object_among_several() {
+    // Reasoning trace has a throwaway example object that fails the schema, then the real
+    // answer. Must validate each candidate and keep the one that fits (not the first).
+    let client = MockStructuredClient::new(vec![MockStructuredClient::reasoning_response(
+        r#"e.g. the shape might be {"note": "scratch"} — no. Real answer: {"amount": 7, "currency": "EUR"}"#,
+        "",
+    )]);
+    let result = generate_blocking(&client, &invoice_request(StructuredMode::Tool))
+        .await
+        .unwrap();
+    assert_eq!(result.object["amount"], 7);
+    assert_eq!(result.object["currency"], "EUR");
+    assert_eq!(result.repair_rounds, 0);
+}
+
+#[tokio::test]
+async fn test_tool_mode_falls_back_to_reasoning_when_no_tool_call() {
+    // Tool mode requested, but the model emitted no tool call and empty content.
+    let client = MockStructuredClient::new(vec![MockStructuredClient::reasoning_response(
+        r#"```json
+{"amount": 42, "currency": "GBP"}
+```"#,
+        "",
+    )]);
+    let result = generate_blocking(&client, &invoice_request(StructuredMode::Tool))
+        .await
+        .unwrap();
+    assert_eq!(result.object["amount"], 42);
+    assert_eq!(result.object["currency"], "GBP");
+}
+
+#[test]
+fn test_extract_raw_candidates_includes_reasoning() {
+    let msg = Message {
+        role: "assistant".to_string(),
+        content: vec![],
+        reasoning_content: Some(r#"{"x": 1}"#.to_string()),
+    };
+    let cands = extract_raw_candidates(&msg, StructuredMode::Tool);
+    assert!(cands.iter().any(|c| c.contains("\"x\"")));
+}
+
+#[test]
+fn test_extract_all_json_values_multiple_objects() {
+    let text = r#"first {"a": 1} then {"b": 2} done"#;
+    let vals = extract_all_json_values(text);
+    assert_eq!(vals.len(), 2);
+    assert_eq!(vals[0]["a"], 1);
+    assert_eq!(vals[1]["b"], 2);
+}
+
+#[test]
+fn test_find_all_balanced_objects() {
+    let text = r#"x {"a":1} y {"b":{"c":2}} z"#;
+    let all = find_all_balanced(text, '{', '}');
+    assert_eq!(all.len(), 2);
+    assert_eq!(all[1], r#"{"b":{"c":2}}"#);
+}
+
+#[test]
+fn test_truncate_utf8_never_splits_multibyte() {
+    let s = "诊断报告".repeat(700); // 4 CJK chars * 3 bytes * 700 > 2000 bytes
+    let t = truncate_utf8(&s, 2000);
+    assert!(t.len() <= 2000);
+    assert!(s.starts_with(t)); // valid prefix, no panic, no broken char
 }
 
 #[tokio::test]
@@ -1651,7 +1787,7 @@ fn test_extract_raw_output_tool_mode_falls_back_to_text() {
         }],
         reasoning_content: None,
     };
-    let raw = extract_raw_output(&msg, StructuredMode::Tool);
-    let value = extract_json_value(&raw).unwrap();
+    let candidates = extract_raw_candidates(&msg, StructuredMode::Tool);
+    let value = extract_json_value(&candidates[0]).unwrap();
     assert_eq!(value["name"], "Bob");
 }
