@@ -2700,15 +2700,15 @@ async fn test_session_options_with_rl_trajectory_records_jsonl() {
     session
         .config
         .rl_trajectory_recorder
-        .record_execution_start(
-            "sess-rl",
-            std::path::Path::new("/tmp/test-ws-rl-trajectory"),
-            "abcdef",
-            &[],
-            None,
-            16,
-            "disabled",
-        );
+        .record_execution_start(crate::rl_trajectory::ExecutionStartRecord {
+            session_id: "sess-rl",
+            workspace: std::path::Path::new("/tmp/test-ws-rl-trajectory"),
+            prompt: "abcdef",
+            history: &[],
+            system_prompt: None,
+            max_tool_rounds: 16,
+            planning_mode: "disabled",
+        });
 
     let content = std::fs::read_to_string(&trajectory_path).unwrap();
     let record: serde_json::Value = serde_json::from_str(content.lines().next().unwrap()).unwrap();

@@ -3,7 +3,7 @@ use super::{AgentEvent, AgentLoop};
 use crate::hooks::{
     ErrorType, GenerateEndEvent, GenerateStartEvent, HookEvent, TokenUsageInfo, ToolCallInfo,
 };
-use crate::llm::{LlmResponse, Message, ToolCall};
+use crate::llm::{LlmResponse, Message, ToolCall, ToolDefinition};
 use anyhow::Context;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -12,6 +12,16 @@ pub(super) struct LlmTurnOutput {
     pub(super) turn: usize,
     pub(super) response: LlmResponse,
     pub(super) tool_calls: Vec<ToolCall>,
+}
+
+struct LlmCallRequest<'a> {
+    turn: usize,
+    messages: &'a [Message],
+    system: Option<&'a str>,
+    tools: &'a [ToolDefinition],
+    session_id: Option<&'a str>,
+    event_tx: &'a Option<mpsc::Sender<AgentEvent>>,
+    cancel_token: &'a tokio_util::sync::CancellationToken,
 }
 
 impl AgentLoop {
@@ -49,14 +59,15 @@ impl AgentLoop {
 
         let llm_start = std::time::Instant::now();
         let response = self
-            .call_llm_with_circuit_breaker(
+            .call_llm_with_circuit_breaker(LlmCallRequest {
                 turn,
-                &state.messages,
-                augmented_system.as_deref(),
+                messages: &state.messages,
+                system: augmented_system.as_deref(),
+                tools: &selected_tools,
                 session_id,
                 event_tx,
                 cancel_token,
-            )
+            })
             .await?;
 
         state.record_usage(&response.usage);
@@ -122,19 +133,14 @@ impl AgentLoop {
 
     async fn call_llm_with_circuit_breaker(
         &self,
-        turn: usize,
-        messages: &[Message],
-        system: Option<&str>,
-        session_id: Option<&str>,
-        event_tx: &Option<mpsc::Sender<AgentEvent>>,
-        cancel_token: &tokio_util::sync::CancellationToken,
+        request: LlmCallRequest<'_>,
     ) -> anyhow::Result<LlmResponse> {
         // Consult the host's BudgetGuard once per turn (not per retry).
         // A `Deny` bails out before the LLM is touched; a `SoftLimit`
         // surfaces a BudgetThresholdHit event and proceeds.
         if let Some(guard) = &self.config.budget_guard {
-            let sid = session_id.unwrap_or("");
-            let estimate = estimate_prompt_tokens(messages, system);
+            let sid = request.session_id.unwrap_or("");
+            let estimate = estimate_prompt_tokens(request.messages, request.system);
             match guard.check_before_llm(sid, estimate).await {
                 crate::budget::BudgetDecision::Allow => {}
                 crate::budget::BudgetDecision::SoftLimit {
@@ -143,7 +149,7 @@ impl AgentLoop {
                     limit,
                     message,
                 } => {
-                    if let Some(tx) = event_tx {
+                    if let Some(tx) = request.event_tx {
                         let _ = tx
                             .send(AgentEvent::BudgetThresholdHit {
                                 resource,
@@ -156,7 +162,7 @@ impl AgentLoop {
                     }
                 }
                 crate::budget::BudgetDecision::Deny { resource, reason } => {
-                    if let Some(tx) = event_tx {
+                    if let Some(tx) = request.event_tx {
                         let _ = tx
                             .send(AgentEvent::BudgetThresholdHit {
                                 resource: resource.clone(),
@@ -178,23 +184,31 @@ impl AgentLoop {
         loop {
             attempt += 1;
             let result = self
-                .call_llm(messages, system, event_tx, cancel_token)
+                .call_llm(
+                    request.messages,
+                    request.system,
+                    request.tools,
+                    request.event_tx,
+                    request.cancel_token,
+                )
                 .await;
             match result {
                 Ok(response) => {
                     if let Some(guard) = &self.config.budget_guard {
                         guard
-                            .record_after_llm(session_id.unwrap_or(""), &response.usage)
+                            .record_after_llm(request.session_id.unwrap_or(""), &response.usage)
                             .await;
                     }
                     return Ok(response);
                 }
-                Err(error) if cancel_token.is_cancelled() => {
+                Err(error) if request.cancel_token.is_cancelled() => {
                     anyhow::bail!(error);
                 }
-                Err(error) if attempt < threshold && (event_tx.is_none() || attempt == 1) => {
+                Err(error)
+                    if attempt < threshold && (request.event_tx.is_none() || attempt == 1) =>
+                {
                     tracing::warn!(
-                        turn = turn,
+                        turn = request.turn,
                         attempt = attempt,
                         threshold = threshold,
                         error = %error,
@@ -211,15 +225,15 @@ impl AgentLoop {
                     } else {
                         format!("LLM call failed: {}", error)
                     };
-                    tracing::error!(turn = turn, attempt = attempt, "{}", msg);
+                    tracing::error!(turn = request.turn, attempt = attempt, "{}", msg);
                     self.fire_on_error(
-                        session_id.unwrap_or(""),
+                        request.session_id.unwrap_or(""),
                         ErrorType::LlmFailure,
                         &msg,
-                        serde_json::json!({"turn": turn, "attempt": attempt}),
+                        serde_json::json!({"turn": request.turn, "attempt": attempt}),
                     )
                     .await;
-                    self.emit_error(event_tx, msg.clone()).await;
+                    self.emit_error(request.event_tx, msg.clone()).await;
                     anyhow::bail!(msg);
                 }
             }
@@ -365,7 +379,7 @@ impl AgentLoop {
     /// Streaming events (`TextDelta`, `ToolStart`) are forwarded to `event_tx`
     /// as they arrive. Non-streaming mode simply awaits the complete response.
     ///
-    /// Tool definitions are selected per turn by the centralized tool selector.
+    /// Tool definitions are selected once per turn by the centralized tool selector.
     ///
     /// Returns `Err` on any LLM API failure. The circuit breaker in
     /// `execute_loop` wraps this call with retry logic for non-streaming mode.
@@ -373,15 +387,14 @@ impl AgentLoop {
         &self,
         messages: &[Message],
         system: Option<&str>,
+        tools: &[ToolDefinition],
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
         cancel_token: &tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<LlmResponse> {
-        let tools = crate::tools::select_tools_for_messages(&self.config.tools, messages);
-
         if event_tx.is_some() {
             let mut stream_rx = match self
                 .llm_client
-                .complete_streaming(messages, system, &tools, cancel_token.clone())
+                .complete_streaming(messages, system, tools, cancel_token.clone())
                 .await
             {
                 Ok(rx) => rx,
@@ -396,7 +409,7 @@ impl AgentLoop {
                     );
                     return self
                         .llm_client
-                        .complete(messages, system, &tools)
+                        .complete(messages, system, tools)
                         .await
                         .with_context(|| {
                             format!(
@@ -447,7 +460,7 @@ impl AgentLoop {
             final_response.context("Stream ended without final response")
         } else {
             self.llm_client
-                .complete(messages, system, &tools)
+                .complete(messages, system, tools)
                 .await
                 .context("LLM call failed")
         }

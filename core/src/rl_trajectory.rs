@@ -161,6 +161,16 @@ pub struct RlTrajectoryRecorder {
     inner: Option<Arc<RlTrajectoryRecorderInner>>,
 }
 
+pub struct ExecutionStartRecord<'a> {
+    pub session_id: &'a str,
+    pub workspace: &'a Path,
+    pub prompt: &'a str,
+    pub history: &'a [Message],
+    pub system_prompt: Option<&'a str>,
+    pub max_tool_rounds: usize,
+    pub planning_mode: &'a str,
+}
+
 struct RlTrajectoryRecorderInner {
     config: RlTrajectoryConfig,
     context: RlTrajectoryContext,
@@ -228,29 +238,20 @@ impl RlTrajectoryRecorder {
         self.inner.is_some()
     }
 
-    pub fn record_execution_start(
-        &self,
-        session_id: &str,
-        workspace: &Path,
-        prompt: &str,
-        history: &[Message],
-        system_prompt: Option<&str>,
-        max_tool_rounds: usize,
-        planning_mode: &str,
-    ) {
+    pub fn record_execution_start(&self, record: ExecutionStartRecord<'_>) {
         let Some(inner) = &self.inner else {
             return;
         };
         let payload = json!({
-            "workspace": workspace.display().to_string(),
-            "prompt": inner.capture_text(prompt),
-            "history_message_count": history.len(),
-            "history": inner.capture_messages(history),
-            "system_prompt": system_prompt.map(|s| inner.capture_text(s)),
-            "max_tool_rounds": max_tool_rounds,
-            "planning_mode": planning_mode,
+            "workspace": record.workspace.display().to_string(),
+            "prompt": inner.capture_text(record.prompt),
+            "history_message_count": record.history.len(),
+            "history": inner.capture_messages(record.history),
+            "system_prompt": record.system_prompt.map(|s| inner.capture_text(s)),
+            "max_tool_rounds": record.max_tool_rounds,
+            "planning_mode": record.planning_mode,
         });
-        inner.record("execution_start", session_id, payload);
+        inner.record("execution_start", record.session_id, payload);
     }
 
     pub fn record_llm_request(
@@ -587,15 +588,15 @@ mod tests {
         let recorder =
             RlTrajectoryRecorder::from_config(Some(RlTrajectoryConfig::new(&path))).unwrap();
 
-        recorder.record_execution_start(
-            "sess-1",
-            Path::new("/workspace"),
-            "solve task",
-            &[],
-            Some("system"),
-            64,
-            "disabled",
-        );
+        recorder.record_execution_start(ExecutionStartRecord {
+            session_id: "sess-1",
+            workspace: Path::new("/workspace"),
+            prompt: "solve task",
+            history: &[],
+            system_prompt: Some("system"),
+            max_tool_rounds: 64,
+            planning_mode: "disabled",
+        });
         recorder.record_tool_result("sess-1", 1, "tool-1", "bash", "ok", 0, 3, &None, None);
 
         let lines = std::fs::read_to_string(path).unwrap();
@@ -615,15 +616,15 @@ mod tests {
         ))
         .unwrap();
 
-        recorder.record_execution_start(
-            "sess-1",
-            Path::new("/workspace"),
-            "abcdef",
-            &[],
-            None,
-            64,
-            "auto",
-        );
+        recorder.record_execution_start(ExecutionStartRecord {
+            session_id: "sess-1",
+            workspace: Path::new("/workspace"),
+            prompt: "abcdef",
+            history: &[],
+            system_prompt: None,
+            max_tool_rounds: 64,
+            planning_mode: "auto",
+        });
 
         let text = std::fs::read_to_string(path).unwrap();
         let record: Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
