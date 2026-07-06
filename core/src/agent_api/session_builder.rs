@@ -138,6 +138,12 @@ pub(super) fn build_agent_session(
 
     let base = agent.config.clone();
     let auto_delegation = resolve_auto_delegation_config(&agent.code_config, opts);
+    let rl_trajectory_config = match opts.rl_trajectory.clone() {
+        Some(config) => Some(config),
+        None => crate::rl_trajectory::RlTrajectoryConfig::from_env()?,
+    };
+    let rl_trajectory_recorder =
+        crate::rl_trajectory::RlTrajectoryRecorder::from_config(rl_trajectory_config)?;
     let config = AgentConfig {
         prompt_slots,
         tools: tool_defs,
@@ -180,6 +186,7 @@ pub(super) fn build_agent_session(
         agent_registry: Some(Arc::clone(&agent_registry)),
         max_execution_time_ms: opts.max_execution_time_ms.or(base.max_execution_time_ms),
         budget_guard: opts.budget_guard.clone().or(base.budget_guard.clone()),
+        rl_trajectory_recorder,
         host_env: opts
             .host_env
             .clone()

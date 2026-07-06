@@ -208,6 +208,21 @@ pub struct SessionOptions {
     /// tasks). `None` (default) keeps everything — fine for short
     /// sessions, a memory leak for hours-long cluster workloads.
     pub retention_limits: Option<crate::retention::SessionRetentionLimits>,
+    /// Optional structured JSONL trajectory config.
+    ///
+    /// When set, a3s-code records user prompts, LLM turns, tool calls,
+    /// tool observations, token usage, and execution end status for RL
+    /// training or service data collection. If unset, the same config can
+    /// be enabled by `A3S_CODE_TRAJECTORY_PATH`.
+    pub rl_trajectory: Option<crate::rl_trajectory::RlTrajectoryConfig>,
+    /// Request token-level log probabilities from compatible LLM providers.
+    ///
+    /// This is off by default because many public providers reject logprob
+    /// requests with tool calls. Training/evaluation harnesses using compatible
+    /// OpenAI-style backends can enable it explicitly.
+    pub llm_logprobs: Option<bool>,
+    /// Number of alternative token logprobs to request per generated token.
+    pub llm_top_logprobs: Option<usize>,
     /// Auto-save after each completed `send()` or default-history `stream()` call.
     pub auto_save: bool,
     /// Optional artifact retention limits for large tool/program outputs.

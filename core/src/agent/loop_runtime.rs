@@ -99,6 +99,18 @@ impl AgentLoop {
         let effective_prompt = turn_context.effective_prompt.as_str();
         let augmented_system = turn_context.augmented_system;
 
+        self.config.rl_trajectory_recorder.record_execution_start(
+            crate::rl_trajectory::ExecutionStartRecord {
+                session_id: session_id.unwrap_or(""),
+                workspace: &self.tool_context.workspace,
+                prompt: effective_prompt,
+                history,
+                system_prompt: augmented_system.as_deref(),
+                max_tool_rounds: self.config.max_tool_rounds,
+                planning_mode: &format!("{:?}", self.config.planning_mode),
+            },
+        );
+
         // Add user message
         if !msg_prompt.is_empty() {
             state.messages.push(Message::user(msg_prompt));

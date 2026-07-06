@@ -1,5 +1,6 @@
 use super::tool_result_runtime::NormalizedToolResult;
 use super::{AgentEvent, AgentLoop, ToolCommand};
+use crate::llm::ToolCall;
 use crate::tools::{ToolContext, ToolStreamEvent};
 use serde_json::Value;
 use std::sync::Arc;
@@ -41,6 +42,16 @@ impl AgentLoop {
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
     ) -> (String, i32, bool, Option<Value>) {
         let call_id = format!("plan-{}-{}", tool_name, uuid::Uuid::new_v4());
+        let synthetic_call = ToolCall {
+            id: call_id.clone(),
+            name: tool_name.to_string(),
+            args: args.clone(),
+        };
+        self.config.rl_trajectory_recorder.record_tool_call(
+            session_id.unwrap_or(""),
+            0,
+            &synthetic_call,
+        );
         if let Some(tx) = event_tx {
             tx.send(AgentEvent::ToolStart {
                 id: call_id.clone(),
@@ -51,8 +62,23 @@ impl AgentLoop {
         }
 
         let ctx = self.tool_context_for_plan(session_id);
+        let started = std::time::Instant::now();
         let normalized = NormalizedToolResult::from_execution(
             self.execute_tool_timed(tool_name, args, &ctx).await,
+        );
+        self.config.rl_trajectory_recorder.record_tool_result(
+            session_id.unwrap_or(""),
+            0,
+            &call_id,
+            tool_name,
+            &normalized.output,
+            normalized.exit_code,
+            started.elapsed().as_millis() as u64,
+            &normalized.metadata,
+            normalized
+                .error_kind
+                .as_ref()
+                .map(|kind| format!("{kind:?}")),
         );
 
         if let Some(tx) = event_tx {

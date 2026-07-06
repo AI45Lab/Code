@@ -245,6 +245,7 @@ impl AnthropicClient {
                     cache_write_tokens: parsed.usage.cache_creation_input_tokens,
                 },
                 stop_reason: Some(parsed.stop_reason),
+                token_logprobs: Vec::new(),
                 meta: Some(LlmResponseMeta {
                     provider: Some(self.provider_name.clone()),
                     request_model: Some(self.model.clone()),
@@ -581,6 +582,7 @@ impl AnthropicClient {
                                                 },
                                                 usage: usage.clone(),
                                                 stop_reason: stop_reason.clone(),
+                                                token_logprobs: Vec::new(),
                                                 meta: Some(LlmResponseMeta {
                                                     provider: Some(provider_name.clone()),
                                                     request_model: Some(request_model.clone()),

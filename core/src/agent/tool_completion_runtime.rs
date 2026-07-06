@@ -50,6 +50,21 @@ impl AgentLoop {
         )
         .await;
 
+        self.config.rl_trajectory_recorder.record_tool_result(
+            session_id.unwrap_or(""),
+            state.current_turn(),
+            &tool_call.id,
+            &tool_call.name,
+            &output,
+            normalized.exit_code,
+            tool_duration.as_millis() as u64,
+            &normalized.metadata,
+            normalized
+                .error_kind
+                .as_ref()
+                .map(|kind| format!("{kind:?}")),
+        );
+
         self.remember_tool_result(
             effective_prompt,
             &tool_call.name,

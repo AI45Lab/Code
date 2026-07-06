@@ -30,6 +30,7 @@ impl StaticStreamingClient {
                 cache_write_tokens: None,
             },
             stop_reason: Some("end_turn".to_string()),
+            token_logprobs: Vec::new(),
             meta: None,
         }
     }
@@ -2680,6 +2681,42 @@ async fn test_active_skill_tool_restriction_option_defaults_and_overrides() {
         )
         .unwrap();
     assert!(legacy_session.config.enforce_active_skill_tool_restrictions);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_session_options_with_rl_trajectory_records_jsonl() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let trajectory_path = dir.path().join("trajectory.jsonl");
+    let agent = Agent::from_config(test_config()).await.unwrap();
+
+    let opts = SessionOptions::new().with_rl_trajectory(
+        crate::rl_trajectory::RlTrajectoryConfig::new(&trajectory_path).with_max_text_bytes(4),
+    );
+    let session = agent
+        .session("/tmp/test-ws-rl-trajectory", Some(opts))
+        .unwrap();
+
+    assert!(session.config.rl_trajectory_recorder.is_enabled());
+    session
+        .config
+        .rl_trajectory_recorder
+        .record_execution_start(crate::rl_trajectory::ExecutionStartRecord {
+            session_id: "sess-rl",
+            workspace: std::path::Path::new("/tmp/test-ws-rl-trajectory"),
+            prompt: "abcdef",
+            history: &[],
+            system_prompt: None,
+            max_tool_rounds: 16,
+            planning_mode: "disabled",
+        });
+
+    let content = std::fs::read_to_string(&trajectory_path).unwrap();
+    let record: serde_json::Value = serde_json::from_str(content.lines().next().unwrap()).unwrap();
+    assert_eq!(record["schema"], crate::rl_trajectory::RL_TRAJECTORY_SCHEMA);
+    assert_eq!(record["event_type"], "execution_start");
+    assert_eq!(record["session_id"], "sess-rl");
+    assert_eq!(record["payload"]["prompt"]["text"], "abcd");
+    assert_eq!(record["payload"]["prompt"]["truncated"], true);
 }
 
 #[tokio::test(flavor = "multi_thread")]

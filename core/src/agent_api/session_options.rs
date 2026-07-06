@@ -42,6 +42,9 @@ impl std::fmt::Debug for SessionOptions {
             .field("memory_store", &self.memory_store.is_some())
             .field("session_store", &self.session_store.is_some())
             .field("session_id", &self.session_id)
+            .field("rl_trajectory", &self.rl_trajectory)
+            .field("llm_logprobs", &self.llm_logprobs)
+            .field("llm_top_logprobs", &self.llm_top_logprobs)
             .field("auto_save", &self.auto_save)
             .field("artifact_store_limits", &self.artifact_store_limits)
             .field("max_parse_retries", &self.max_parse_retries)
@@ -362,6 +365,29 @@ impl SessionOptions {
         limits: crate::retention::SessionRetentionLimits,
     ) -> Self {
         self.retention_limits = Some(limits);
+        self
+    }
+
+    /// Enable structured JSONL trajectory capture for this session.
+    ///
+    /// This is the preferred programmatic path for RL training and deployed
+    /// service data collection. Environment-only deployments can instead set
+    /// `A3S_CODE_TRAJECTORY_PATH`.
+    pub fn with_rl_trajectory(mut self, config: crate::rl_trajectory::RlTrajectoryConfig) -> Self {
+        self.rl_trajectory = Some(config);
+        self
+    }
+
+    /// Request token-level log probabilities from compatible LLM providers.
+    pub fn with_llm_logprobs(mut self, enabled: bool) -> Self {
+        self.llm_logprobs = Some(enabled);
+        self
+    }
+
+    /// Request up to `top_logprobs` alternative logprobs per generated token.
+    pub fn with_llm_top_logprobs(mut self, top_logprobs: usize) -> Self {
+        self.llm_logprobs = Some(true);
+        self.llm_top_logprobs = Some(top_logprobs);
         self
     }
 

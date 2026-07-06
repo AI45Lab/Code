@@ -26,6 +26,10 @@ pub struct LlmConfig {
     pub max_tokens: Option<usize>,
     /// Extended thinking budget in tokens (Anthropic only).
     pub thinking_budget: Option<usize>,
+    /// Request token-level log probabilities from OpenAI-compatible providers.
+    pub logprobs: Option<bool>,
+    /// Number of alternative logprobs per token when logprobs are requested.
+    pub top_logprobs: Option<usize>,
     /// When true, temperature is never sent to the API (e.g., o1 models).
     pub disable_temperature: bool,
 }
@@ -47,6 +51,8 @@ impl std::fmt::Debug for LlmConfig {
             .field("temperature", &self.temperature)
             .field("max_tokens", &self.max_tokens)
             .field("thinking_budget", &self.thinking_budget)
+            .field("logprobs", &self.logprobs)
+            .field("top_logprobs", &self.top_logprobs)
             .field("disable_temperature", &self.disable_temperature)
             .finish()
     }
@@ -70,6 +76,8 @@ impl LlmConfig {
             temperature: None,
             max_tokens: None,
             thinking_budget: None,
+            logprobs: None,
+            top_logprobs: None,
             disable_temperature: false,
         }
     }
@@ -111,6 +119,17 @@ impl LlmConfig {
 
     pub fn with_thinking_budget(mut self, budget: usize) -> Self {
         self.thinking_budget = Some(budget);
+        self
+    }
+
+    pub fn with_logprobs(mut self, enabled: bool) -> Self {
+        self.logprobs = Some(enabled);
+        self
+    }
+
+    pub fn with_top_logprobs(mut self, top_logprobs: usize) -> Self {
+        self.logprobs = Some(true);
+        self.top_logprobs = Some(top_logprobs);
         self
     }
 
@@ -168,6 +187,12 @@ pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
             if let Some(max) = config.max_tokens {
                 client = client.with_max_tokens(max);
             }
+            if let Some(enabled) = config.logprobs {
+                client = client.with_logprobs(enabled);
+            }
+            if let Some(top_logprobs) = config.top_logprobs {
+                client = client.with_top_logprobs(top_logprobs);
+            }
             Arc::new(client)
         }
         "glm" | "zhipu" | "bigmodel" => {
@@ -182,6 +207,12 @@ pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
             }
             if let Some(max) = config.max_tokens {
                 client = client.with_max_tokens(max);
+            }
+            if let Some(enabled) = config.logprobs {
+                client = client.with_logprobs(enabled);
+            }
+            if let Some(top_logprobs) = config.top_logprobs {
+                client = client.with_top_logprobs(top_logprobs);
             }
             Arc::new(client)
         }
@@ -207,6 +238,12 @@ pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
             }
             if let Some(max) = config.max_tokens {
                 client = client.with_max_tokens(max);
+            }
+            if let Some(enabled) = config.logprobs {
+                client = client.with_logprobs(enabled);
+            }
+            if let Some(top_logprobs) = config.top_logprobs {
+                client = client.with_top_logprobs(top_logprobs);
             }
             Arc::new(client)
         }

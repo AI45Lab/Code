@@ -13,6 +13,7 @@ impl AgentLoop {
         tool_call: &ToolCall,
         state: &mut ExecutionLoopState,
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
+        session_id: Option<&str>,
     ) -> anyhow::Result<bool> {
         if let Some((duplicate_count, error_msg)) = state.duplicate_tool_call(
             &tool_call.name,
@@ -37,6 +38,17 @@ impl AgentLoop {
             state
                 .messages
                 .push(Message::tool_result(&tool_call.id, &error_msg, true));
+            self.config.rl_trajectory_recorder.record_tool_result(
+                session_id.unwrap_or(""),
+                state.current_turn(),
+                &tool_call.id,
+                &tool_call.name,
+                &error_msg,
+                1,
+                0,
+                &None,
+                Some("duplicate_tool_call".to_string()),
+            );
             return Ok(true);
         }
 
@@ -68,6 +80,17 @@ impl AgentLoop {
                 &parse_outcome.output,
                 true,
             ));
+            self.config.rl_trajectory_recorder.record_tool_result(
+                session_id.unwrap_or(""),
+                state.current_turn(),
+                &tool_call.id,
+                &tool_call.name,
+                &parse_outcome.output,
+                1,
+                0,
+                &None,
+                Some("parse_error".to_string()),
+            );
 
             if let Some(msg) = parse_outcome.fatal_message {
                 tracing::error!("{}", msg);

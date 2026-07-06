@@ -190,6 +190,14 @@ impl AgentLoop {
                     a3s.llm.total_tokens = r.usage.total_tokens,
                     "a3s.agent.execute completed"
                 );
+                self.config.rl_trajectory_recorder.record_execution_end(
+                    session_id.unwrap_or(""),
+                    true,
+                    Some(&r.text),
+                    Some(&r.usage),
+                    Some(r.tool_calls_count),
+                    None,
+                );
                 self.fire_post_response(
                     session_id.unwrap_or(""),
                     &r.text,
@@ -203,6 +211,14 @@ impl AgentLoop {
                 tracing::warn!(
                     error = %e,
                     "a3s.agent.execute failed"
+                );
+                self.config.rl_trajectory_recorder.record_execution_end(
+                    session_id.unwrap_or(""),
+                    false,
+                    None,
+                    None,
+                    None,
+                    Some(&e.to_string()),
                 );
                 self.fire_on_error(
                     session_id.unwrap_or(""),

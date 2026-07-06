@@ -43,6 +43,12 @@ impl AgentLoop {
     ) -> anyhow::Result<()> {
         state.record_tool_call();
         let tool_start = std::time::Instant::now();
+        let turn = state.current_turn();
+        self.config.rl_trajectory_recorder.record_tool_call(
+            session_id.unwrap_or(""),
+            turn,
+            &tool_call,
+        );
 
         tracing::info!(
             tool_name = tool_call.name.as_str(),
@@ -51,7 +57,7 @@ impl AgentLoop {
         );
 
         if self
-            .handle_tool_preflight_guard(&tool_call, state, event_tx)
+            .handle_tool_preflight_guard(&tool_call, state, event_tx, session_id)
             .await?
         {
             return Ok(());

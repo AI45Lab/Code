@@ -1580,6 +1580,7 @@ mod tests {
                 cache_write_tokens: None,
             },
             stop_reason: Some("end_turn".to_string()),
+            token_logprobs: Vec::new(),
             meta: None,
         }
     }

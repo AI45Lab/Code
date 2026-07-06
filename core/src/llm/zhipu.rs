@@ -41,6 +41,16 @@ impl ZhipuClient {
         self
     }
 
+    pub fn with_logprobs(mut self, enabled: bool) -> Self {
+        self.0 = self.0.with_logprobs(enabled);
+        self
+    }
+
+    pub fn with_top_logprobs(mut self, top_logprobs: usize) -> Self {
+        self.0 = self.0.with_top_logprobs(top_logprobs);
+        self
+    }
+
     pub fn with_base_url(mut self, base_url: String) -> Self {
         self.0 = self.0.with_base_url(base_url);
         self
