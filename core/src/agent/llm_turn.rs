@@ -33,17 +33,14 @@ impl AgentLoop {
             "LLM completion started"
         );
 
-        let selected_tool_names =
-            crate::tools::select_tools_for_messages(&self.config.tools, &state.messages)
-                .into_iter()
-                .map(|tool| tool.name)
-                .collect::<Vec<_>>();
+        let selected_tools =
+            crate::tools::select_tools_for_messages(&self.config.tools, &state.messages);
         self.config.rl_trajectory_recorder.record_llm_request(
             session_id.unwrap_or(""),
             turn,
             &state.messages,
             augmented_system.as_deref(),
-            &selected_tool_names,
+            &selected_tools,
             estimate_prompt_tokens(&state.messages, augmented_system.as_deref()),
         );
 

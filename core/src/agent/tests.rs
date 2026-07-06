@@ -263,6 +263,7 @@ impl MockLlmClient {
                 cache_write_tokens: None,
             },
             stop_reason: Some("end_turn".to_string()),
+            token_logprobs: Vec::new(),
             meta: None,
         }
     }
@@ -291,6 +292,7 @@ impl MockLlmClient {
                 cache_write_tokens: None,
             },
             stop_reason: Some("tool_use".to_string()),
+            token_logprobs: Vec::new(),
             meta: None,
         }
     }
@@ -1080,6 +1082,7 @@ async fn test_agent_hitl_multiple_tool_calls() {
                 cache_write_tokens: None,
             },
             stop_reason: Some("tool_use".to_string()),
+            token_logprobs: Vec::new(),
             meta: None,
         },
         MockLlmClient::text_response("Both executed!"),
@@ -1164,6 +1167,7 @@ async fn test_agent_hitl_partial_approval() {
                 cache_write_tokens: None,
             },
             stop_reason: Some("tool_use".to_string()),
+            token_logprobs: Vec::new(),
             meta: None,
         },
         MockLlmClient::text_response("First worked, second rejected."),
@@ -1893,6 +1897,7 @@ async fn test_agent_multiple_tools_single_turn() {
                 cache_write_tokens: None,
             },
             stop_reason: Some("tool_use".to_string()),
+            token_logprobs: Vec::new(),
             meta: None,
         },
         MockLlmClient::text_response("Both commands ran"),

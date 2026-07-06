@@ -558,6 +558,27 @@ export interface SessionOptions {
    */
   thinkingBudget?: number
   /**
+   * Request token-level log probabilities from OpenAI-compatible backends.
+   *
+   * Providers that do not support logprobs may reject the request.
+   */
+  llmLogprobs?: boolean
+  /** Number of top token log probabilities to request when logprobs are enabled. */
+  llmTopLogprobs?: number
+  /**
+   * Structured JSONL trajectory path.
+   *
+   * When set, records user input, LLM turns, tool calls, tool observations,
+   * token usage, and execution end status.
+   */
+  trajectoryPath?: string
+  /** Trajectory mode: "on" or "off". Defaults to "on" when `trajectoryPath` is set. */
+  trajectoryMode?: string
+  /** Max bytes retained for any single text field before truncation. */
+  trajectoryMaxTextBytes?: number
+  /** Whether LLM request records include full message arrays. */
+  trajectoryIncludeMessages?: boolean
+  /**
    * Enable continuation injection (default: true).
    * When enabled, the loop injects a follow-up prompt when the LLM stops without completing.
    */

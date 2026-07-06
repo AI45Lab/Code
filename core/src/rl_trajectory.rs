@@ -5,7 +5,10 @@
 //! turns, tool calls, tool observations, token usage, and termination reasons.
 //! It is opt-in: normal sessions pay only a cheap disabled-recorder branch.
 
-use crate::llm::{ContentBlock, LlmResponse, Message, TokenUsage, ToolCall};
+use crate::llm::{
+    ContentBlock, LlmResponse, Message, TokenLogProb, TokenUsage, ToolCall, ToolDefinition,
+    TopTokenLogProb,
+};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -256,18 +259,23 @@ impl RlTrajectoryRecorder {
         turn: usize,
         messages: &[Message],
         system: Option<&str>,
-        available_tools: &[String],
+        available_tools: &[ToolDefinition],
         estimated_prompt_tokens: usize,
     ) {
         let Some(inner) = &self.inner else {
             return;
         };
+        let available_tool_names = available_tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>();
         let payload = json!({
             "turn": turn,
             "messages_count": messages.len(),
             "messages": inner.capture_messages(messages),
             "system_prompt": system.map(|s| inner.capture_text(s)),
-            "available_tools": available_tools,
+            "available_tools": available_tool_names,
+            "tool_definitions": available_tools.iter().map(tool_definition_value).collect::<Vec<_>>(),
             "estimated_prompt_tokens": estimated_prompt_tokens,
         });
         inner.record("llm_request", session_id, payload);
@@ -289,6 +297,7 @@ impl RlTrajectoryRecorder {
             "response_text": inner.capture_text(&response.text()),
             "reasoning_content": response.message.reasoning_content.as_ref().map(|s| inner.capture_text(s)),
             "tool_calls": response.tool_calls().iter().map(tool_call_value).collect::<Vec<_>>(),
+            "token_logprobs": response.token_logprobs.iter().map(token_logprob_value).collect::<Vec<_>>(),
             "usage": token_usage_value(&response.usage),
             "stop_reason": response.stop_reason.clone(),
             "meta": response.meta.clone(),
@@ -497,6 +506,31 @@ fn tool_call_value(tool_call: &ToolCall) -> Value {
     })
 }
 
+fn tool_definition_value(tool: &ToolDefinition) -> Value {
+    json!({
+        "name": tool.name,
+        "description": tool.description,
+        "parameters": tool.parameters,
+    })
+}
+
+fn token_logprob_value(token: &TokenLogProb) -> Value {
+    json!({
+        "token": token.token,
+        "logprob": token.logprob,
+        "bytes": token.bytes,
+        "top_logprobs": token.top_logprobs.iter().map(top_token_logprob_value).collect::<Vec<_>>(),
+    })
+}
+
+fn top_token_logprob_value(token: &TopTokenLogProb) -> Value {
+    json!({
+        "token": token.token,
+        "logprob": token.logprob,
+        "bytes": token.bytes,
+    })
+}
+
 fn token_usage_value(usage: &TokenUsage) -> Value {
     json!({
         "prompt_tokens": usage.prompt_tokens,
@@ -597,5 +631,87 @@ mod tests {
         assert!(prompt.get("sha256").is_some());
         assert_eq!(prompt["text"], "abc");
         assert_eq!(prompt["truncated"], true);
+    }
+
+    #[test]
+    fn llm_events_include_tool_definitions_and_token_logprobs() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("trajectory.jsonl");
+        let recorder =
+            RlTrajectoryRecorder::from_config(Some(RlTrajectoryConfig::new(&path))).unwrap();
+
+        let tools = vec![ToolDefinition {
+            name: "bash".to_string(),
+            description: "Run a shell command".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "cmd": { "type": "string" }
+                },
+                "required": ["cmd"]
+            }),
+        }];
+        recorder.record_llm_request("sess-1", 1, &[Message::user("hi")], None, &tools, 7);
+
+        recorder.record_llm_response(
+            "sess-1",
+            1,
+            &LlmResponse {
+                message: Message {
+                    role: "assistant".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: "hello".to_string(),
+                    }],
+                    reasoning_content: None,
+                },
+                usage: TokenUsage {
+                    prompt_tokens: 7,
+                    completion_tokens: 1,
+                    total_tokens: 8,
+                    cache_read_tokens: None,
+                    cache_write_tokens: None,
+                },
+                stop_reason: Some("stop".to_string()),
+                token_logprobs: vec![TokenLogProb {
+                    token: "hello".to_string(),
+                    logprob: -0.2,
+                    bytes: Some(vec![104, 101, 108, 108, 111]),
+                    top_logprobs: vec![TopTokenLogProb {
+                        token: "hi".to_string(),
+                        logprob: -1.2,
+                        bytes: Some(vec![104, 105]),
+                    }],
+                }],
+                meta: None,
+            },
+            42,
+        );
+
+        let lines = std::fs::read_to_string(path).unwrap();
+        let records = lines
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        let request = records
+            .iter()
+            .find(|record| record["event_type"] == "llm_request")
+            .unwrap();
+        assert_eq!(request["payload"]["available_tools"][0], "bash");
+        assert_eq!(request["payload"]["tool_definitions"][0]["name"], "bash");
+        assert_eq!(
+            request["payload"]["tool_definitions"][0]["parameters"]["required"][0],
+            "cmd"
+        );
+
+        let response = records
+            .iter()
+            .find(|record| record["event_type"] == "llm_response")
+            .unwrap();
+        assert_eq!(response["payload"]["token_logprobs"][0]["token"], "hello");
+        assert_eq!(response["payload"]["token_logprobs"][0]["logprob"], -0.2);
+        assert_eq!(
+            response["payload"]["token_logprobs"][0]["top_logprobs"][0]["token"],
+            "hi"
+        );
     }
 }

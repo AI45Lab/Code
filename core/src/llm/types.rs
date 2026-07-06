@@ -382,6 +382,8 @@ pub struct LlmResponse {
     pub message: Message,
     pub usage: TokenUsage,
     pub stop_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub token_logprobs: Vec<TokenLogProb>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meta: Option<LlmResponseMeta>,
 }
@@ -406,6 +408,25 @@ pub struct TokenUsage {
     pub total_tokens: usize,
     pub cache_read_tokens: Option<usize>,
     pub cache_write_tokens: Option<usize>,
+}
+
+/// Token-level log probability emitted by an OpenAI-compatible backend.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenLogProb {
+    pub token: String,
+    pub logprob: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<Vec<u8>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub top_logprobs: Vec<TopTokenLogProb>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TopTokenLogProb {
+    pub token: String,
+    pub logprob: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<Vec<u8>>,
 }
 
 /// Tool call from LLM

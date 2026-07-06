@@ -74,11 +74,42 @@ pub(super) fn resolve_session_llm_client(
         }
     }
 
+    let logprobs = opts
+        .llm_logprobs
+        .or_else(|| env_bool("A3S_CODE_LLM_LOGPROBS"))
+        .or_else(|| env_bool("A3S_CODE_OPENAI_LOGPROBS"));
+    if let Some(enabled) = logprobs {
+        llm_config = llm_config.with_logprobs(enabled);
+    }
+
+    let top_logprobs = opts
+        .llm_top_logprobs
+        .or_else(|| env_usize("A3S_CODE_LLM_TOP_LOGPROBS"))
+        .or_else(|| env_usize("A3S_CODE_OPENAI_TOP_LOGPROBS"));
+    if let Some(top_logprobs) = top_logprobs {
+        llm_config = llm_config.with_top_logprobs(top_logprobs);
+    }
+
     if let Some(session_id) = session_id {
         llm_config = llm_config.with_session_id(session_id);
     }
 
     Ok(crate::llm::create_client_with_config(llm_config))
+}
+
+fn env_bool(name: &str) -> Option<bool> {
+    let value = std::env::var(name).ok()?;
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn env_usize(name: &str) -> Option<usize> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
 }
 
 pub(super) struct ResolvedSessionMemory {

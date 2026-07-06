@@ -1899,6 +1899,23 @@ pub struct SessionOptions {
     /// Extended thinking token budget (e.g. 10_000). Enables chain-of-thought reasoning.
     /// Only applied when `model` is also set. Provider must support extended thinking.
     pub thinking_budget: Option<u32>,
+    /// Request token-level log probabilities from OpenAI-compatible backends.
+    ///
+    /// Providers that do not support logprobs may reject the request.
+    pub llm_logprobs: Option<bool>,
+    /// Number of top token log probabilities to request when logprobs are enabled.
+    pub llm_top_logprobs: Option<u32>,
+    /// Structured JSONL trajectory path.
+    ///
+    /// When set, records user input, LLM turns, tool calls, tool observations,
+    /// token usage, and execution end status.
+    pub trajectory_path: Option<String>,
+    /// Trajectory mode: "on" or "off". Defaults to "on" when `trajectoryPath` is set.
+    pub trajectory_mode: Option<String>,
+    /// Max bytes retained for any single text field before truncation.
+    pub trajectory_max_text_bytes: Option<u32>,
+    /// Whether LLM request records include full message arrays.
+    pub trajectory_include_messages: Option<bool>,
     /// Enable continuation injection (default: true).
     /// When enabled, the loop injects a follow-up prompt when the LLM stops without completing.
     pub continuation_enabled: Option<bool>,
@@ -2495,6 +2512,28 @@ fn js_session_options_to_rust(options: Option<SessionOptions>) -> napi::Result<R
     }
     if let Some(budget) = o.thinking_budget {
         opts = opts.with_thinking_budget(budget as usize);
+    }
+    if let Some(enabled) = o.llm_logprobs {
+        opts = opts.with_llm_logprobs(enabled);
+    }
+    if let Some(top_logprobs) = o.llm_top_logprobs {
+        opts = opts.with_llm_top_logprobs(top_logprobs as usize);
+    }
+    if let Some(path) = o.trajectory_path {
+        let mut config = a3s_code_core::RlTrajectoryConfig::new(path);
+        if let Some(mode) = o.trajectory_mode {
+            let parsed = a3s_code_core::RlTrajectoryMode::parse(&mode).ok_or_else(|| {
+                napi::Error::from_reason(format!("trajectoryMode must be 'on' or 'off', got {mode}"))
+            })?;
+            config = config.with_mode(parsed);
+        }
+        if let Some(max_bytes) = o.trajectory_max_text_bytes {
+            config = config.with_max_text_bytes(max_bytes as usize);
+        }
+        if let Some(include_messages) = o.trajectory_include_messages {
+            config = config.with_include_messages(include_messages);
+        }
+        opts = opts.with_rl_trajectory(config);
     }
     if let Some(enabled) = o.continuation_enabled {
         opts = opts.with_continuation(enabled);
@@ -6074,6 +6113,40 @@ mod tests {
             legacy_opts.enforce_active_skill_tool_restrictions,
             Some(true)
         );
+    }
+
+    #[test]
+    fn session_options_maps_rl_trajectory_controls() {
+        let opts = js_session_options_to_rust(Some(SessionOptions {
+            trajectory_path: Some("/tmp/a3s-trajectory.jsonl".to_string()),
+            trajectory_mode: Some("on".to_string()),
+            trajectory_max_text_bytes: Some(1234),
+            trajectory_include_messages: Some(false),
+            ..Default::default()
+        }))
+        .unwrap();
+
+        let config = opts.rl_trajectory.expect("trajectory config");
+        assert_eq!(
+            config.path,
+            std::path::PathBuf::from("/tmp/a3s-trajectory.jsonl")
+        );
+        assert_eq!(config.mode, a3s_code_core::RlTrajectoryMode::On);
+        assert_eq!(config.max_text_bytes, 1234);
+        assert!(!config.include_messages);
+    }
+
+    #[test]
+    fn session_options_maps_llm_logprob_controls() {
+        let opts = js_session_options_to_rust(Some(SessionOptions {
+            llm_logprobs: Some(true),
+            llm_top_logprobs: Some(1),
+            ..Default::default()
+        }))
+        .unwrap();
+
+        assert_eq!(opts.llm_logprobs, Some(true));
+        assert_eq!(opts.llm_top_logprobs, Some(1));
     }
 
     #[test]

@@ -25,6 +25,8 @@ pub struct OpenAiClient {
     pub(crate) headers: HashMap<String, String>,
     pub(crate) temperature: Option<f32>,
     pub(crate) max_tokens: Option<usize>,
+    pub(crate) logprobs: bool,
+    pub(crate) top_logprobs: Option<usize>,
     pub(crate) http: Arc<dyn HttpClient>,
     pub(crate) retry_config: RetryConfig,
 }
@@ -92,6 +94,8 @@ impl OpenAiClient {
             headers: HashMap::new(),
             temperature: None,
             max_tokens: None,
+            logprobs: false,
+            top_logprobs: None,
             http: default_http_client(),
             retry_config: RetryConfig::default(),
         }
@@ -129,6 +133,17 @@ impl OpenAiClient {
 
     pub fn with_max_tokens(mut self, max_tokens: usize) -> Self {
         self.max_tokens = Some(max_tokens);
+        self
+    }
+
+    pub fn with_logprobs(mut self, enabled: bool) -> Self {
+        self.logprobs = enabled;
+        self
+    }
+
+    pub fn with_top_logprobs(mut self, top_logprobs: usize) -> Self {
+        self.logprobs = true;
+        self.top_logprobs = Some(top_logprobs);
         self
     }
 
@@ -341,6 +356,12 @@ impl OpenAiClient {
         if let Some(max) = self.max_tokens {
             request["max_tokens"] = serde_json::json!(max);
         }
+        if self.logprobs {
+            request["logprobs"] = serde_json::json!(true);
+            if let Some(top_logprobs) = self.top_logprobs {
+                request["top_logprobs"] = serde_json::json!(top_logprobs);
+            }
+        }
 
         if !tools.is_empty() {
             request["tools"] = serde_json::json!(self.convert_tools(tools));
@@ -406,6 +427,11 @@ impl OpenAiClient {
                 serde_json::from_str(&response).context("Failed to parse OpenAI response")?;
 
             let choice = parsed.choices.into_iter().next().context("No choices")?;
+            let token_logprobs = choice
+                .logprobs
+                .as_ref()
+                .map(openai_logprobs_to_token_logprobs)
+                .unwrap_or_default();
 
             let mut content = vec![];
 
@@ -458,6 +484,7 @@ impl OpenAiClient {
                     cache_write_tokens: None,
                 },
                 stop_reason: choice.finish_reason,
+                token_logprobs,
                 meta: Some(LlmResponseMeta {
                     provider: Some(self.provider_name.clone()),
                     request_model: Some(self.model.clone()),
@@ -637,6 +664,7 @@ impl OpenAiClient {
                     std::collections::BTreeMap::new();
                 let mut usage = TokenUsage::default();
                 let mut finish_reason = None;
+                let mut token_logprobs: Vec<TokenLogProb> = Vec::new();
                 let mut response_id = None;
                 let mut response_model = None;
                 let mut response_object = None;
@@ -695,6 +723,7 @@ impl OpenAiClient {
                                         },
                                         usage: usage.clone(),
                                         stop_reason: std::mem::take(&mut finish_reason),
+                                        token_logprobs: std::mem::take(&mut token_logprobs),
                                         meta: Some(LlmResponseMeta {
                                             provider: Some(provider_name.clone()),
                                             request_model: Some(request_model.clone()),
@@ -738,6 +767,11 @@ impl OpenAiClient {
                                     }
 
                                     if let Some(choice) = event.choices.into_iter().next() {
+                                        if let Some(logprobs) = choice.logprobs.as_ref() {
+                                            token_logprobs.extend(
+                                                openai_logprobs_to_token_logprobs(logprobs),
+                                            );
+                                        }
                                         if let Some(reason) = choice.finish_reason {
                                             finish_reason = Some(reason);
                                         }
@@ -922,6 +956,9 @@ impl OpenAiClient {
                                 .and_then(|d| d.cached_tokens);
                         }
                         if let Some(choice) = event.choices.into_iter().next() {
+                            if let Some(logprobs) = choice.logprobs.as_ref() {
+                                token_logprobs.extend(openai_logprobs_to_token_logprobs(logprobs));
+                            }
                             if let Some(reason) = choice.finish_reason {
                                 finish_reason = Some(reason);
                             }
@@ -1013,6 +1050,9 @@ impl OpenAiClient {
                             .and_then(|d| d.cached_tokens);
 
                         if let Some(choice) = response.choices.into_iter().next() {
+                            if let Some(logprobs) = choice.logprobs.as_ref() {
+                                token_logprobs.extend(openai_logprobs_to_token_logprobs(logprobs));
+                            }
                             finish_reason = choice.finish_reason;
                             if let Some(text) =
                                 choice.message.content.filter(|text| !text.is_empty())
@@ -1079,6 +1119,7 @@ impl OpenAiClient {
                         },
                         usage: usage.clone(),
                         stop_reason: std::mem::take(&mut finish_reason),
+                        token_logprobs: std::mem::take(&mut token_logprobs),
                         meta: Some(LlmResponseMeta {
                             provider: Some(provider_name.clone()),
                             request_model: Some(request_model.clone()),
@@ -1106,6 +1147,32 @@ impl OpenAiClient {
     }
 }
 
+fn openai_logprobs_to_token_logprobs(logprobs: &OpenAiChoiceLogprobs) -> Vec<TokenLogProb> {
+    logprobs
+        .content
+        .as_ref()
+        .map(|items| {
+            items
+                .iter()
+                .map(|item| TokenLogProb {
+                    token: item.token.clone(),
+                    logprob: item.logprob,
+                    bytes: item.bytes.clone(),
+                    top_logprobs: item
+                        .top_logprobs
+                        .iter()
+                        .map(|top| TopTokenLogProb {
+                            token: top.token.clone(),
+                            logprob: top.logprob,
+                            bytes: top.bytes.clone(),
+                        })
+                        .collect(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 // OpenAI API response types (private)
 #[derive(Debug, Deserialize)]
 pub(crate) struct OpenAiResponse {
@@ -1123,6 +1190,32 @@ pub(crate) struct OpenAiResponse {
 pub(crate) struct OpenAiChoice {
     pub(crate) message: OpenAiMessage,
     pub(crate) finish_reason: Option<String>,
+    #[serde(default)]
+    pub(crate) logprobs: Option<OpenAiChoiceLogprobs>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct OpenAiChoiceLogprobs {
+    #[serde(default)]
+    pub(crate) content: Option<Vec<OpenAiTokenLogprob>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct OpenAiTokenLogprob {
+    pub(crate) token: String,
+    pub(crate) logprob: f64,
+    #[serde(default)]
+    pub(crate) bytes: Option<Vec<u8>>,
+    #[serde(default)]
+    pub(crate) top_logprobs: Vec<OpenAiTopLogprob>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct OpenAiTopLogprob {
+    pub(crate) token: String,
+    pub(crate) logprob: f64,
+    #[serde(default)]
+    pub(crate) bytes: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1189,6 +1282,8 @@ pub(crate) struct OpenAiStreamChoice {
     pub(crate) message: Option<OpenAiMessage>,
     pub(crate) delta: Option<OpenAiDelta>,
     pub(crate) finish_reason: Option<String>,
+    #[serde(default)]
+    pub(crate) logprobs: Option<OpenAiChoiceLogprobs>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1338,6 +1433,28 @@ mod tests {
         assert!(resp.message.tool_calls().is_empty());
     }
 
+    #[tokio::test]
+    async fn streaming_collects_token_logprobs() {
+        let chunks = vec![
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"},\"logprobs\":{\"content\":[{\"token\":\"hello\",\"logprob\":-0.2,\"bytes\":[104,101,108,108,111],\"top_logprobs\":[{\"token\":\"hi\",\"logprob\":-1.2,\"bytes\":[104,105]}]}]}}]}\n\n"
+                .to_string(),
+            "data: {\"choices\":[{\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n"
+                .to_string(),
+            "data: [DONE]\n\n".to_string(),
+        ];
+        let resp = drain_to_done(&glm_client(chunks).with_logprobs(true)).await;
+        assert_eq!(resp.text(), "hello");
+        assert_eq!(resp.token_logprobs.len(), 1);
+        assert_eq!(resp.token_logprobs[0].token, "hello");
+        assert_eq!(resp.token_logprobs[0].logprob, -0.2);
+        assert_eq!(
+            resp.token_logprobs[0].bytes.as_deref(),
+            Some(&[104, 101, 108, 108, 111][..])
+        );
+        assert_eq!(resp.token_logprobs[0].top_logprobs[0].token, "hi");
+        assert_eq!(resp.token_logprobs[0].top_logprobs[0].logprob, -1.2);
+    }
+
     #[test]
     fn test_apply_directive_forced_function_tool_choice() {
         let mut req = serde_json::json!({ "model": "m" });
@@ -1410,6 +1527,45 @@ mod tests {
         let req = make_client().build_chat_request(&[Message::user("hi")], None, &[], None);
         assert!(req.get("tool_choice").is_none());
         assert!(req.get("response_format").is_none());
+        assert!(req.get("logprobs").is_none());
+        assert!(req.get("top_logprobs").is_none());
+    }
+
+    #[test]
+    fn test_build_chat_request_includes_logprob_options_when_enabled() {
+        let req = make_client().with_top_logprobs(1).build_chat_request(
+            &[Message::user("hi")],
+            None,
+            &[],
+            None,
+        );
+        assert_eq!(req["logprobs"], true);
+        assert_eq!(req["top_logprobs"], 1);
+    }
+
+    #[test]
+    fn test_parse_openai_token_logprobs() {
+        let parsed = openai_logprobs_to_token_logprobs(&OpenAiChoiceLogprobs {
+            content: Some(vec![OpenAiTokenLogprob {
+                token: "hello".to_string(),
+                logprob: -0.25,
+                bytes: Some(vec![104, 101, 108, 108, 111]),
+                top_logprobs: vec![OpenAiTopLogprob {
+                    token: "hi".to_string(),
+                    logprob: -1.5,
+                    bytes: Some(vec![104, 105]),
+                }],
+            }]),
+        });
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].token, "hello");
+        assert_eq!(parsed[0].logprob, -0.25);
+        assert_eq!(
+            parsed[0].bytes.as_deref(),
+            Some(&[104, 101, 108, 108, 111][..])
+        );
+        assert_eq!(parsed[0].top_logprobs[0].token, "hi");
+        assert_eq!(parsed[0].top_logprobs[0].logprob, -1.5);
     }
 
     #[test]

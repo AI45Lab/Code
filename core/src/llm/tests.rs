@@ -330,6 +330,7 @@ mod tests {
                 cache_write_tokens: None,
             },
             stop_reason: Some("end_turn".to_string()),
+            token_logprobs: Vec::new(),
             meta: None,
         };
         assert_eq!(response.text(), "Hello!");
@@ -352,6 +353,7 @@ mod tests {
             },
             usage: TokenUsage::default(),
             stop_reason: Some("tool_use".to_string()),
+            token_logprobs: Vec::new(),
             meta: None,
         };
         let calls = response.tool_calls();
@@ -567,6 +569,7 @@ mod extra_llm_tests {
             },
             usage: TokenUsage::default(),
             stop_reason: None,
+            token_logprobs: Vec::new(),
             meta: None,
         };
         assert_eq!(r.text(), "resp");
@@ -586,6 +589,7 @@ mod extra_llm_tests {
             },
             usage: TokenUsage::default(),
             stop_reason: None,
+            token_logprobs: Vec::new(),
             meta: None,
         };
         assert_eq!(r.tool_calls().len(), 1);
@@ -1661,6 +1665,7 @@ mod extra_llm_tests2 {
             },
             usage: TokenUsage::default(),
             stop_reason: None,
+            token_logprobs: Vec::new(),
             meta: None,
         };
         assert_eq!(response.text(), "response text");
@@ -1680,6 +1685,7 @@ mod extra_llm_tests2 {
             },
             usage: TokenUsage::default(),
             stop_reason: Some("tool_use".to_string()),
+            token_logprobs: Vec::new(),
             meta: None,
         };
         let calls = response.tool_calls();
@@ -2093,6 +2099,7 @@ mod extra_llm_tests2 {
             message: Message::user("test"),
             usage: TokenUsage::default(),
             stop_reason: Some("end_turn".to_string()),
+            token_logprobs: Vec::new(),
             meta: None,
         };
         let json = serde_json::to_string(&response).unwrap();

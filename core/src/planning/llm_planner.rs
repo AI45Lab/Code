@@ -616,6 +616,7 @@ mod tests {
                 },
                 usage: crate::llm::TokenUsage::default(),
                 stop_reason: None,
+                token_logprobs: Vec::new(),
                 meta: None,
             })
         }

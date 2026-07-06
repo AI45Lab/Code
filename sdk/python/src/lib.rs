@@ -4896,6 +4896,10 @@ struct PySessionOptions {
     /// Extended thinking token budget (e.g. 10_000). Enables chain-of-thought reasoning.
     /// Only applied when ``model`` is also set. Provider must support extended thinking.
     thinking_budget: Option<usize>,
+    /// Request token-level log probabilities from OpenAI-compatible backends.
+    llm_logprobs: Option<bool>,
+    /// Number of top token log probabilities to request when logprobs are enabled.
+    llm_top_logprobs: Option<usize>,
     /// Enable continuation injection (default: True).
     /// When enabled, the loop injects a follow-up prompt when the LLM stops without completing.
     continuation_enabled: Option<bool>,
@@ -5022,6 +5026,8 @@ impl Clone for PySessionOptions {
             circuit_breaker_threshold: self.circuit_breaker_threshold,
             temperature: self.temperature,
             thinking_budget: self.thinking_budget,
+            llm_logprobs: self.llm_logprobs,
+            llm_top_logprobs: self.llm_top_logprobs,
             continuation_enabled: self.continuation_enabled,
             max_continuation_turns: self.max_continuation_turns,
             max_execution_time_ms: self.max_execution_time_ms,
@@ -5087,6 +5093,8 @@ impl PySessionOptions {
             circuit_breaker_threshold: None,
             temperature: None,
             thinking_budget: None,
+            llm_logprobs: None,
+            llm_top_logprobs: None,
             continuation_enabled: None,
             max_continuation_turns: None,
             max_execution_time_ms: None,
@@ -5517,6 +5525,30 @@ impl PySessionOptions {
     #[setter]
     fn set_thinking_budget(&mut self, value: Option<usize>) {
         self.thinking_budget = value;
+    }
+
+    /// Request token-level log probabilities from OpenAI-compatible backends.
+    ///
+    /// Providers that do not support logprobs may reject the request.
+    #[getter]
+    fn get_llm_logprobs(&self) -> Option<bool> {
+        self.llm_logprobs
+    }
+
+    #[setter]
+    fn set_llm_logprobs(&mut self, value: Option<bool>) {
+        self.llm_logprobs = value;
+    }
+
+    /// Number of top token log probabilities to request.
+    #[getter]
+    fn get_llm_top_logprobs(&self) -> Option<usize> {
+        self.llm_top_logprobs
+    }
+
+    #[setter]
+    fn set_llm_top_logprobs(&mut self, value: Option<usize>) {
+        self.llm_top_logprobs = value;
     }
 
     /// Enable or disable continuation injection (default: True).
@@ -6134,6 +6166,12 @@ fn build_rust_session_options(so: PySessionOptions) -> PyResult<RustSessionOptio
     }
     if let Some(budget) = so.thinking_budget {
         o = o.with_thinking_budget(budget);
+    }
+    if let Some(enabled) = so.llm_logprobs {
+        o = o.with_llm_logprobs(enabled);
+    }
+    if let Some(top_logprobs) = so.llm_top_logprobs {
+        o = o.with_llm_top_logprobs(top_logprobs);
     }
     if let Some(enabled) = so.continuation_enabled {
         o = o.with_continuation(enabled);
@@ -7140,6 +7178,17 @@ mod tests {
         assert_eq!(config.mode, a3s_code_core::RlTrajectoryMode::On);
         assert_eq!(config.max_text_bytes, 1234);
         assert!(!config.include_messages);
+    }
+
+    #[test]
+    fn session_options_map_llm_logprob_controls() {
+        let mut session_options = PySessionOptions::new();
+        session_options.llm_logprobs = Some(true);
+        session_options.llm_top_logprobs = Some(1);
+
+        let opts = build_rust_session_options(session_options).unwrap();
+        assert_eq!(opts.llm_logprobs, Some(true));
+        assert_eq!(opts.llm_top_logprobs, Some(1));
     }
 
     #[test]
