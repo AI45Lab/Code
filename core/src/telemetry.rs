@@ -193,7 +193,39 @@ pub fn default_model_pricing() -> std::collections::HashMap<String, ModelPricing
     pricing.insert("gpt-4o-mini".to_string(), ModelPricing::new(0.15, 0.6));
     pricing.insert("gpt-4-turbo".to_string(), ModelPricing::new(10.0, 30.0));
 
+    // Every other model id and alias from the `llm-prices` table. Entries
+    // above take precedence and are never overwritten.
+    #[cfg(feature = "llm-prices")]
+    for row in llm_prices::all() {
+        if let (Some(input), Some(output)) = (row.input, row.output) {
+            for id in std::iter::once(row.model).chain(row.aliases.iter().copied()) {
+                pricing
+                    .entry(id.to_string())
+                    .or_insert_with(|| ModelPricing::new(input, output));
+            }
+        }
+    }
+
     pricing
+}
+
+/// Look up pricing for a model id.
+///
+/// Checks [`default_model_pricing`] first. With the `llm-prices` feature, ids
+/// that are not in the registry verbatim (provider prefixes such as
+/// `anthropic/`, Bedrock ids, dated or undated Anthropic ids) are resolved
+/// through `llm_prices::lookup`.
+pub fn lookup_model_pricing(model: &str) -> Option<ModelPricing> {
+    if let Some(pricing) = default_model_pricing().remove(model) {
+        return Some(pricing);
+    }
+    #[cfg(feature = "llm-prices")]
+    if let Some(row) = llm_prices::lookup(model) {
+        if let (Some(input), Some(output)) = (row.input, row.output) {
+            return Some(ModelPricing::new(input, output));
+        }
+    }
+    None
 }
 
 // ============================================================================
@@ -704,6 +736,31 @@ mod tests {
         assert!(debug_str.contains("ModelPricing"));
         assert!(debug_str.contains("3.0"));
         assert!(debug_str.contains("15.0"));
+    }
+
+    #[test]
+    fn test_lookup_model_pricing_registry_entry() {
+        let pricing = lookup_model_pricing("claude-sonnet-4-20250514").unwrap();
+        assert_eq!(pricing.input_per_million, 3.0);
+        assert_eq!(pricing.output_per_million, 15.0);
+        assert!(lookup_model_pricing("not-a-real-model").is_none());
+    }
+
+    #[cfg(feature = "llm-prices")]
+    #[test]
+    fn test_llm_prices_extends_registry() {
+        let pricing = default_model_pricing();
+        // Hand-written entries keep their values.
+        let turbo = pricing.get("gpt-4-turbo").unwrap();
+        assert_eq!(turbo.input_per_million, 10.0);
+        assert_eq!(turbo.output_per_million, 30.0);
+        // Newer models come from the llm-prices table.
+        assert!(pricing.contains_key("claude-sonnet-4-6"));
+        assert!(pricing.contains_key("gpt-5"));
+        assert!(pricing.contains_key("gemini-2.5-pro"));
+        // Provider prefixes and dated ids resolve through lookup.
+        assert!(lookup_model_pricing("anthropic/claude-sonnet-4-6").is_some());
+        assert!(lookup_model_pricing("claude-haiku-4-5-20251001").is_some());
     }
 
     #[test]

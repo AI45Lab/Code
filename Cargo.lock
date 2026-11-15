@@ -64,6 +64,7 @@ dependencies = [
  "htmd",
  "html2text",
  "ignore",
+ "llm-prices",
  "lopdf",
  "opentelemetry 0.27.1",
  "opentelemetry-otlp",
@@ -2648,6 +2649,12 @@ name = "litemap"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
+
+[[package]]
+name = "llm-prices"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9606d5d2a074a2de43ae1e9d76ffdb95e5ffb870533b89caccaa4aa2d4abf2d6"
 
 [[package]]
 name = "lock_api"

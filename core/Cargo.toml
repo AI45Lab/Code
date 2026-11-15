@@ -104,6 +104,8 @@ uuid = { version = "1.6", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 # Cron parsing for the `serve` schedules (gated behind the `serve` feature).
 cron = { version = "0.12", optional = true }
+# Dated, source-cited LLM price table (optional, gated by `llm-prices` feature).
+llm-prices = { version = "1.1", optional = true }
 rquickjs = { version = "0.11.0", features = ["futures"] }
 
 # S3-compatible workspace backend (optional, gated by `s3` feature)
@@ -128,6 +130,9 @@ telemetry = [
     "dep:opentelemetry-otlp",
     "dep:tracing-opentelemetry",
 ]
+# Extend `default_model_pricing()` with the `llm-prices` table (Claude 4.5+,
+# GPT-5.x, Gemini, DeepSeek). Hand-written entries keep their values.
+llm-prices = ["dep:llm-prices"]
 # Enable AHP (Agent Harness Protocol) integration for external supervision
 ahp = ["dep:a3s-ahp"]
 # Enable the S3-compatible workspace backend (`S3WorkspaceBackend`).
